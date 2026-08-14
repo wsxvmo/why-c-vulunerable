@@ -425,6 +425,7 @@ Subagent tasks that run > 8-10 minutes get interrupted (user Esc / message arriv
 
 1. **One CWE class per auditor dispatch** — never bundle 3+ classes into one task. If a class has many entry points, split by entry point ("audit recv handler only", "audit config parser only").
 2. **Prove timing before parallelizing** — run ONE c-auditor on a small slice first, measure, then decide concurrency (parallel dispatch multiplies wall-clock, not latency).
+3. **并发上限 6** — 一次最多同时派 6 个子代理（实测: 12 核/7.7GB 机器上 6 并发 ≈ 1.7GB 峰值 JVM RSS 且耗时 37s; 8+ 并发 CPU 抢核收益递减、内存线性涨至 ~4.3GB）。>6 个任务分两批（先 6 后补）。
 3. **Cap per-task scope explicitly in the task text**: "examine at most 3 entry points, then emit INCOMPLETE with the unchecked list" — the auditor's exhaustion contract already caps at 8.
 4. **Never hunt inline** — the coordinator's own read/grep tools are for orchestration only (see HUNT hard rule). Even a 200-line file gets a c-auditor dispatch; the dispatch is the audit, and inline work is not valid coverage.
 5. **Never dispatch without turnBudget** — a missing budget means the subagent runs until the model decides to stop, which is exactly the 9-10 min window that gets aborted.
