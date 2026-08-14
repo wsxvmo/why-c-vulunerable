@@ -22,7 +22,7 @@ bash bootstrap.sh --check   # 只查工具链 + 安装状态
 bash bootstrap.sh --force   # 强制重新注册包
 ```
 
-安装后：`/reload` → `/audit on` → 告诉 agent "对 <目标> 跑代码审计流水线"。
+安装后：给协调器（c-harness）一句"对 <目标> 跑代码审计流水线"即可；审计技能（codeaudit-pipeline / audit-runner / code-audit / audit-tools）由 agent 按需加载。
 
 ### 手动安装（分步）
 
@@ -42,7 +42,7 @@ bash install-c.sh
 | codebase-memory-mcp | 全库图谱、调用链追踪 | `command -v codebase-memory-mcp` |
 | audit-tools | Joern/codebase-memory 硬封装（禁裸 joern） | `command -v audit-tools` |
 | audit-runner (skills/audit-runner/) | 确定性编排层（CPG 生命周期/门禁/覆盖/账本/快照） | `python3 doctor.py` |
-| pi-lsp（clangd） | C/C++ 语义级验证（references/definition/hover/diagnostics） | `lsp_*` 工具 |
+| pi-lsp（clangd） | C/C++ 语义级验证（可选用 `clangd --check`；缺失时用 read/grep 兜底） | `command -v clangd`（可选） |
 | gcc/clang + valgrind | sanitizer 复现（VALIDATE 阶段） | `command -v gcc valgrind` |
 
 **不依赖**：CodeQL、Joern 以外的重型分析器、任何 Web 渗透工具、目标项目编译能力。
@@ -51,12 +51,12 @@ bash install-c.sh
 
 | 工具 | 用途 |
 |------|------|
-| CaseAdd / CaseUpdate / PromoteFinding | 案件台账 + 硬 PoC 门禁（sandbox 内 exit 0 才确认）|
-| CaseGet / CaseList / CaseSearch | 浏览案件 |
-| CaseLink / CaseUnlink | 漏洞链记录 |
-| CaseReport | Markdown 报告（对接 KVE 模板）|
-| lsp_diagnostics / lsp_definition / lsp_references / lsp_hover / lsp_symbols | clangd 语义验证 |
-| todo / /todos | 任务列表 |
+| `casefile.py`（preset 内置）| 案件台账 + 证据日志 + schema 硬门禁（`validate` 权威校验，sandbox 内 PoC exit 0 才确认）|
+| `audit-runner`（skills/audit-runner/）| 确定性编排层：`ledger.py`（去重登记/log）、`gate.py`（门禁）、`coverage.py`（覆盖状态机）、`resilience.py`（中间快照）、`cpg.py`（CPG 生命周期）、`doctor.py`（健康检查）|
+| `audit-tools`（extensions/）| Joern/codebase-memory 硬封装（禁裸 joern）|
+| read / grep / `clangd --check` | 逐跳语义验证（本环境无 pi `lsp_*` 工具，用 read/grep 兜底）|
+
+> 注：pi 时代的 Case*/PromoteFinding/lsp_* 工具在本环境不存在 — persona 与角色简报已改用上述真实工具。
 
 ## 快速开始
 

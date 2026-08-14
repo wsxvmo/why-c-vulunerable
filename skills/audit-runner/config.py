@@ -13,6 +13,7 @@ audit-runner / config.py — 迁移优先的路径与工具链解析层。
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -185,7 +186,60 @@ def doctor() -> Dict[str, dict]:
         "fix": "export AUDIT_TOOLS_CACHE=<可写目录>（沙箱内则指向工作区）",
     }
 
+    # 6. 阶段机顺序一致性（agent 提示词漂移检测 — 教训: harness.md 曾把
+    #    VALIDATE 排在 GAPFIL 前, 与规范顺序相反且多文件重复声明, 漂移无人察觉）
+    out["stage-order"] = _check_stage_order()
+
     return out
+
+
+# 规范阶段机顺序（单一事实源）
+CANONICAL_STAGES = ["RECON", "HUNT", "GAPFIL", "TRACE", "VALIDATE", "CHAIN", "REPORT"]
+
+# 需要一致性检测的 agent 提示词文件: persona + 角色简报 + skills 清单
+def _prompt_files() -> List[Path]:
+    files: List[Path] = []
+    try:
+        files.append(resolve_preset_dir() / "agent.cordis.yml")
+        roles = resolve_preset_dir() / "roles"
+        files += sorted(roles.glob("*.md"))
+    except RuntimeError:
+        pass
+    files += sorted(SKILLS_ROOT.glob("*/SKILL.md"))
+    return files
+
+
+def _extract_stage_seq(text: str) -> Optional[List[str]]:
+    """从文本中提取箭头链里的阶段名序列（RECON...REPORT 窗口, ≤500 字符）。"""
+    m = re.search(r"RECON\s*(?:→|->)\s*HUNT.{0,500}?REPORT", text, re.S)
+    if not m:
+        return None
+    return re.findall(r"\b(RECON|HUNT|GAPFIL|TRACE|VALIDATE|CHAIN|REPORT)\b", m.group(0))
+
+
+def _check_stage_order() -> dict:
+    bad: List[str] = []
+    checked = 0
+    for f in _prompt_files():
+        if not f.exists():
+            continue
+        text = f.read_text(errors="ignore")
+        seq = _extract_stage_seq(text)
+        if seq is None:
+            continue
+        checked += 1
+        if seq != CANONICAL_STAGES:
+            bad.append(f"{f.name}: {' → '.join(seq)}")
+    if not checked:
+        return {"ok": False, "detail": "未发现任何阶段机声明（扫描范围异常）",
+                "fix": "检查 _prompt_files() 路径是否可访问"}
+    if bad:
+        return {"ok": False,
+                "detail": f"阶段机顺序漂移 ({len(bad)}/{checked} 声明不一致): "
+                          + "; ".join(bad),
+                "fix": "修正为规范顺序: RECON → HUNT → GAPFIL → TRACE → VALIDATE → CHAIN → REPORT"}
+    return {"ok": True, "detail": f"{checked} 处阶段机声明全部与规范一致",
+            "fix": ""}
 
 
 def doctor_exit(checks: Dict[str, dict]) -> int:
