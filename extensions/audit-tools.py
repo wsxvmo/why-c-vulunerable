@@ -32,6 +32,7 @@ No third-party deps. Python 3 stdlib only.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shlex
@@ -40,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # ── defaults ────────────────────────────────────────────────────────────────
@@ -56,11 +58,15 @@ def _resolve_bin(name: str) -> str | None:
     return p
 
 
-def _run(cmd: list[str], timeout: int, input_bytes: bytes | None = None) -> dict:
+def _run(cmd: list[str], timeout: int, input_bytes: bytes | None = None,
+         cwd: str | None = None) -> dict:
     """Run a subprocess with a hard timeout, kill the whole group on expiry.
 
     Always returns a structured dict — never raises, never blocks past timeout.
     stdin is closed ( DEVNULL ) so interactive REPLs cannot hang waiting on it.
+    cwd: 若给定, 子进程在该目录运行。joern 会把 workspace/ 写到 cwd —
+    传每次调用唯一的临时目录可避免多 agent 并发查同一 CPG 时的 workspace 竞态
+    （该竞态表现为静默空结果 / 'already exists - overwriting'）。
     """
     start = time.time()
     try:
@@ -70,6 +76,7 @@ def _run(cmd: list[str], timeout: int, input_bytes: bytes | None = None) -> dict
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,          # new process group -> kill the tree
+            cwd=cwd,
         )
     except FileNotFoundError:
         return {"ok": False, "error": "binary not found: %s" % cmd[0], "cmd": cmd}
@@ -115,6 +122,28 @@ def _cpg_cache_path(root: str) -> Path:
     return CPG_CACHE_DIR / ("%s.cpg" % key)
 
 
+@contextmanager
+def _cpg_lock(cpg: str):
+    """同一 CPG 的 joern 访问串行化 + 每次调用唯一工作目录。
+
+    多 agent 并发查同一 CPG 时, joern 会向各自 cwd 的 workspace/ 写同名副本,
+    竞态表现为: 静默空结果(ok:true 但 stdout 只有 INFO 行) / 'already exists -
+    overwriting' / 甚至损坏的 workspace。flock 保证同一 CPG 的 joern 进程互斥,
+    唯一 mkdtemp 保证即使未来放开锁, workspace 路径也不碰撞。
+    代价: 同 CPG 的查询串行（每查询 ~13s 排队）— 正确性优先。
+    """
+    lock_path = cpg + ".lock"
+    lock_fd = open(lock_path, "w")
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    workdir = tempfile.mkdtemp(prefix="joernw-")
+    try:
+        yield workdir
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 # ── tools ───────────────────────────────────────────────────────────────────
 def tool_build_cpg(args: dict) -> dict:
     root = args.get("root")
@@ -144,7 +173,10 @@ def tool_build_cpg(args: dict) -> dict:
         except OSError:
             pass
 
-    res = _run(cmd, timeout=int(args.get("timeout", DEFAULT_BUILD_TIMEOUT)))
+    # 串行化构建: 双构建竞争同一输出 = 中断产物（空 overlays + cpg.bin.tmp）
+    with _cpg_lock(out) as workdir:
+        res = _run(cmd, timeout=int(args.get("timeout", DEFAULT_BUILD_TIMEOUT)),
+                   cwd=workdir)
     res["cpg"] = out if res.get("ok") else None
     res["cached"] = cached
     # trim huge stdout
@@ -193,7 +225,9 @@ def tool_query_cpg(args: dict) -> dict:
         os.write(fd, query.encode("utf-8"))
         os.close(fd)
         cmd = [joern, "--script", script_path, cpg]
-        res = _run(cmd, timeout=int(args.get("timeout", DEFAULT_QUERY_TIMEOUT)))
+        with _cpg_lock(cpg) as workdir:
+            res = _run(cmd, timeout=int(args.get("timeout", DEFAULT_QUERY_TIMEOUT)),
+                       cwd=workdir)
         return res
     finally:
         try:
