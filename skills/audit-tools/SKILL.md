@@ -107,3 +107,8 @@ Every tool returns JSON. The fields agents care about:
 
 If you ever find yourself typing a bare `joern`/`joern-parse`/`joern-scan` command in
 bash, stop and use the corresponding `audit-tools cli …` tool instead.
+
+## 接口选择（实战纪律）
+
+- **bash CLI 是首选主通道**（`audit-tools cli ...`）：全文输出、已验证稳定，协调器/子代理一律用它。
+- **MCP 接口**（`audit_*` 工具）可用但：① 响应被裁剪为紧凑有界值（stdout/stderr ≤20KB，大输出走 CLI 拿全文）；② **升级 audit-tools 代码后，已启动的 MCP 服务进程不会热加载新代码** —— 长会话遇到 `value is not lossless JSON` 类错误，先重启会话/重连 MCP 让服务进程重生，再不行就全程走 CLI。
