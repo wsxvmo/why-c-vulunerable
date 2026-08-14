@@ -18,3 +18,7 @@ __pycache__/
 
 # 系统
 .DS_Store
+
+# 审计扫描候选/复现（不公开）
+candidates.json
+pocs/
