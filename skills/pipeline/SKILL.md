@@ -5,6 +5,18 @@ description: Full pipeline orchestration skill for C/C++/Shell/Python source cod
 
 # Pipeline Orchestration Skill
 
+## Skills to load (before orchestrating, 必读)
+
+| Skill | 作用 | 加载时机 |
+|---|---|---|
+| **`audit-runner`** | **确定性编排层（本流水线的工具底座）**: `doctor.py`（迁移健康检查）、`cpg.py`（CPG 生命周期+查询模板）、`gate.py`（schema 门禁）、`coverage.py`（覆盖状态机+GAPFIL）、`ledger.py`（账本去重）、`resilience.py`（中间结论快照） | **每次运行前必加载**（RECON 之前） |
+| `code-audit` | 每 CWE 类方法论：checklist / detection / confirmation / false-positive elimination | HUNT/GAPFIL 派发前 |
+| `audit-tools` | Joern/codebase-memory 硬封装（禁裸 joern） | HUNT/TRACE 引擎调用时 |
+| `tricks` | 卡住时的思考框架、kill 分类、证据质量阶梯 | 任意阶段陷入困境时 |
+| `c-harness` / `c-auditor` / `c-tracer` / `c-exploit` / `c-chain` | 五个流水线角色简报 | 对应阶段派发子代理前 |
+
+> 铁律：**不用 audit-runner 的确定性过程不算"走流水线"** —— CPG 构建/查询、schema 门禁、覆盖统计、账本登记、中间快照必须经 `doctor.py`/`cpg.py`/`gate.py`/`coverage.py`/`ledger.py`/`resilience.py`，手工重做一遍不产生额外覆盖，只增加错误面（本次审计的失败样本: CPG 状态混乱 ×3、println 契约 ×8、重复案件 ×2、结论未落地 ×2）。
+
 ## Stage Machine
 
 ```
@@ -25,9 +37,9 @@ Each stage produces a structured output. The next stage validates it before star
 The pipeline assumes the target codebase is **in scope** and the toolchain is available. Before dispatching the first auditor, verify:
 
 1. **Target is defined.** Record the repo path + language distribution in the pipeline-run case `target` + `assumptions`. Every analysis must stay inside this codebase.
-2. **Toolchain is present.** Static analysis relies on `codebase-memory-mcp` (graph) + `lsp_*` tools (pi-lsp/clangd for C/C++/Shell semantics) + `grep`/`read`. Sanitizer validation relies on `gcc`/`clang` with `-fsanitize=address,undefined`, `valgrind`, `cppcheck`. Check with `bash("command -v gcc clang valgrind cppcheck clang-tidy")` at run start and record what's available.
-3. **Joern is available.** The pipeline uses Joern (fuzzy mode, no compilation needed) as a mandatory analysis engine for HUNT (joern-scan querydb) and TRACE (taint propagation queries). Verify with `bash("command -v joern joern-parse joern-scan")`. If missing, ask the user before starting.
-4. **Target indexed in codebase-memory-mcp.** Run `codebase-memory-mcp cli index_repository --repo-path <target>` (with extension-completion pre-step for extensionless files) if not already indexed. Record the project name.
+2. **Toolchain is present.** Static analysis relies on `codebase-memory-mcp` (graph) + `grep`/`read` + `audit-runner`. Sanitizer validation relies on `gcc`/`clang` with `-fsanitize=address,undefined`, `valgrind`. Run `python3 <skills>/audit-runner/doctor.py` at run start — 5 项健康检查（skill-tree/preset/schemas/toolchain/cache），FAIL 项自带 fix 指引。Record what's available.
+3. **Joern is available.** The pipeline uses Joern (fuzzy mode, no compilation needed) as a mandatory analysis engine for HUNT (joern-scan querydb) and TRACE (taint propagation queries). doctor.py 的 toolchain 检查覆盖 `joern joern-parse joern-scan audit-tools codebase-memory-mcp`。If missing, ask the user before starting.
+4. **Target indexed in codebase-memory-mcp.** Run `codebase-memory-mcp cli index_repository --repo-path <target>` (with extension-completion pre-step for extensionless files) if not already indexed. Record the project name. CPG 构建用 `python3 -m cpg build --root <abs-target>`（绝对 root + 显式输出 + 缓存命中 + 干净 cwd）。
 5. **Input surface identified.** Enumerate entry points in RECON **with the indexed graph, not by hand** — hand/grep enumeration is the #1 source of blind spots (missing submodules → INCOMPLETE coverage). Use codebase-memory queries to get the full candidate list, then confirm semantics with the model:
    ```bash
    # 未被任何函数调用的 Function = 入口候选（main/回调/导出/信号/dbus 注册）
@@ -58,30 +70,27 @@ Each stage has:
 
 ## State Tracking via Casefile
 
-Track pipeline state in the casefile ledger. Use a dedicated pipeline-run case:
+Track pipeline state in the casefile ledger (engine `casefile.py`, wrapper `ledger.py` — 用 wrapper 自动去重/校验 case 存在). 流水线运行案件在 `casefile.py init` 时建立:
 
 ```
-CaseAdd(
-  title: "Pipeline: <target> <timestamp>",
-  status: hypothesis,
-  bugClass: "pipeline-run",
-  target: "<target>",
-  tags: ["pipeline"]
-)
+casefile.py init <run-dir> --title "Pipeline: <target> <timestamp>" --target "<target>"
 ```
 
-Record per-stage progress with `CaseUpdate`:
-- Add `nextStep: "stage: recon complete, findings: 3, moving to validate"` after each stage
-- Add `assumptions: ["COVERED: buffer-overflow, use-after-free | SKIPPED: unsafe-deserialization | NOT_FOUND: command-injection"]` for coverage
-- Tag findings with the pipeline run ID for cross-referencing
+Record per-stage progress:
+- 发现登记: `python3 -m ledger --run-dir <run-dir> --op add --title "<short>" --bug-class <class> --dedup-key <kw>` (自动去重, 防重复案件)
+- 状态推进: `casefile.py update <run-dir> <case-id> --status ... --field key=value`
+- 证据留痕: `python3 -m ledger --run-dir <run-dir> --op log --case-id <id> --stage <S> --verdict <V> --evidence "<one-line>"` (自动校验 case 存在)
+- 中间结论快照: `python3 -m resilience checkpoint --run-dir <run-dir> --case <id> --stage <S> --summary '<one-line>'` — 长等待步骤前必做, 防"分析完毕结论未落地"
+- `nextStep: "stage: recon complete, findings: 3, moving to validate"` after each stage (run.json)
+- `assumptions: ["COVERED: buffer-overflow, use-after-free | SKIPPED: unsafe-deserialization | NOT_FOUND: command-injection"]` for coverage (由 `coverage.py` 状态机产出)
 
-This gives you resume capability: on restart, `CaseList(tag: "pipeline")` shows previous runs and their last recorded stage.
+This gives you resume capability: on restart, `casefile.py list <run-dir>` + `resilience.py resume` shows previous runs and their last recorded stage.
 
 ## Schema Validation at Stage Boundaries
 
-Every stage output must conform to its schema before the next stage begins. Validate by reading the schema file and checking each required field.
+Every stage output must conform to its schema before the next stage begins. **用 `python3 -m gate --run-dir <run-dir> --stage <finding|trace|validation|chain|report> --output <output.json>` 校验** — quick-validate（必需字段独立检查）+ casefile.py validate（权威门禁）。
 
-### Stage Schemas (in `schemas/`):
+### Stage Schemas (in `schemas/`, 路径由 audit-runner/config.py 解析):
 
 | Stage | Schema | Required Fields |
 |-------|--------|-----------------|
@@ -93,9 +102,9 @@ Every stage output must conform to its schema before the next stage begins. Vali
 
 **Validation procedure:**
 ```
-1. Read the schema file: read("schemas/stage-finding.json")
-2. For each output, check every required field exists and has non-null content
-3. If missing or malformed → return to the stage agent with "Your output is missing: <fields>. Please fix."
+1. python3 -m gate --run-dir <run-dir> --stage <stage> --output <output.json>
+2. QUICK-PASS + AUTHORITATIVE exit=0 → 通过; 否则回退给产出代理修复
+3. 若缺字段/畸形 → 回退: "Your output is missing: <fields>. Please fix."
 4. Re-validate after repair. Max 2 repair attempts per stage.
 ```
 
@@ -131,16 +140,17 @@ Suggested class partitions (adjust to target's language mix):
 - Python: eval-injection, unsafe-deserialization, command-injection, path-traversal, race-condition
 - Cross-cutting: toctou, race-condition, resource-leak, memory-leak, crypto-weakness, info-disclosure
 
-**Every auditor MUST run the Joern engine as part of hunting:**
+**Every auditor MUST run the Joern engine as part of hunting** (经 audit-runner/audit-tools, 禁止裸 joern):
 ```
 # 1. Build CPG once per target (fuzzy mode — no compilation of the target):
-joern-parse <target-root> --out /tmp/<target>.cpg
+python3 -m cpg build --root <abs-target>          # 绝对 root; 缓存命中; 干净 cwd
 # 2. Run the querydb sweep (100+ built-in CVE queries):
-joern-scan /tmp/<target>.cpg
-# 3. For the assigned class, run targeted queries (e.g. sink discovery via
-#    cpg.call.name("memcpy|strcpy|sprintf|system|popen|eval|exec") ...)
-# Joern output = candidate list. Every candidate still needs codebase-memory/
-# clangd verification + evidence — Joern never confirms anything by itself.
+audit-tools cli scan_cpg --cpg <cpg> --tags <cwe>
+# 3. For the assigned class, run targeted queries (模板在 skills/audit-runner/queries/):
+python3 -m cpg query --cpg <cpg> --file queries/sinks.sc --timeout 240
+#    println 已强制; 空结果(仅 INFO 行) → 转 grep 兜底, 不重试白等
+# Joern output = candidate list. Every candidate still needs read/grep 逐跳验证
+# + evidence — Joern never confirms anything by itself.
 ```
 Joern candidates that survive `clangd`/read verification become hypotheses. Joern-only hits that cannot be verified semantically are dropped or marked low confidence.
 
@@ -208,16 +218,16 @@ For each hypothesis that passed validation:
     task: "Trace whether attacker input reaches the sink at <file:line>. ..."})
 ```
 
-**Tracer MUST use the Joern taint engine as the primary path-finder:**
+**Tracer MUST use the Joern taint engine as the primary path-finder** (经 audit-runner, 禁止裸 joern):
 ```
-# 1. Run taint query on the CPG built during HUNT (or rebuild if missing):
-joern --script /tmp/taint.sc --param sink=<sink> --param source=<entry>
-# or interactively: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
+# 1. Run taint query on the CPG built during HUNT (or rebuild via cpg.py if missing):
+python3 -m cpg query --cpg <cpg> --file /tmp/taint.sc --timeout 240
+#    taint 模板: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
 # 2. Joern output = candidate data-flow path (expression-level, cross-procedure)
-# 3. Verify each hop with clangd/pi-lsp (lsp_definition / lsp_references) + read:
-#    confirm the symbols are real, no name collision, types match
+# 3. Verify each hop with read/grep (逐符号确认: 真实存在/无同名碰撞/类型匹配)
 # 4. Record the value-level path in the trace output's `data_flow` field
 #    (e.g. argv[1] → strlen(x)+1 → memcpy(dst,src,n))
+# 注意: 容器抽象 (jsoncpp Json::Value / std::string 包装) 下 OssDataflow 会假阴性 → 纯读码
 ```
 Joern output is a **candidate** — never a verdict. Only paths verified hop-by-hop with clangd + read become REACHABLE. If Joern is unavailable for the target's language (e.g. Shell), fall back to codebase-memory `trace_path --mode data_flow` + manual hop verification.
 
@@ -253,7 +263,7 @@ Sanitizer repros run through `PromoteFinding` in the sandbox (exit 0 = triggered
 
 ```
 For each CWE class with "INCOMPLETE" coverage:
-  Read the class's checked/unchecked entry-point list from the pipeline-run case.
+  python3 -m coverage --input <auditor-entries.json>   # 生成 GAPFIL 队列（含 CHECKED 列表）
   subagent({agent: "c-auditor",
     task: "Hunt for <class> in <target>. Previous hunts found nothing.
              These entry points are ALREADY CHECKED — do not re-tread them: <checked list>.
@@ -275,17 +285,14 @@ that wasn't previously audited):
 
 Coverage is the pipeline's self-check. It answers: "what did we actually test vs what did we skip or miss?"
 
-After the hunt + gapfill stages, emit a coverage summary in the pipeline-run case. Each class line must list the entry points checked so gapfill can target the gaps:
+After the hunt + gapfill stages, emit a coverage summary in the pipeline-run case. **把各审计代理的 CHECKED/UNCHECKED 条目喂给 `python3 -m coverage --input <auditor-entries.json>`**（状态机: UNCHECKED 空+有假设 → COVERED; UNCHECKED 非空 → INCOMPLETE; 空+0 假设 → NOT_FOUND; 显式 reason → SKIPPED）:
 
 ```
-assumptions: [
-  "COVERED: buffer-overflow (c) — checked main(argv), network recv handler, config parser; memcpy/strcpy sinks verified via Joern + clangd",
-  "COVERED: use-after-free (c) — checked all free() call sites reachable from network input; no double-path found",
-  "SKIPPED: unsafe-deserialization (no pickle/yaml.load in target)",
-  "NOT_FOUND: command-injection (shell) — checked all system()/popen()/eval() sites; all args are compile-time constants",
-  "COVERED: access-control — checked all DBus method handlers for credential checks; 2 handlers lack sd_bus_creds_get_uid → hypothesis",
-  "INCOMPLETE: privilege-mgmt — checked setuid drop in main; UNCHECKED: signal handlers, config reload path"
-]
+auditor entries (每代理一行):
+  {"cls": "buffer-overflow", "checked": ["main","recv"], "unchecked": ["cfg-parser"],
+   "hypotheses": 1}
+coverage.py 输出:
+  覆盖状态 + GAPFIL 队列（INCOMPLETE 类带 checked 列表, 直接喂 gapfill 派发）
 ```
 
 This feeds the gapfill loop. `INCOMPLETE` classes get re-queued with their unchecked list. `NOT_FOUND` is only valid when no entry point is unchecked.
@@ -316,17 +323,24 @@ Rules:
 - Clean up all test artifacts afterwards (VM snapshot restore, temp files, injected policy).
 - Record results in the finding (evidence field) as `LIVE CONFIRMED` / `LIVE NOT-TRIGGERED`; a live failure does NOT automatically kill a sanitizer-confirmed finding — investigate why (environment mismatch, wrong version) before deciding.
 
-## Run Artifacts: 证据链留痕（audit_log）
+## Run Artifacts: 证据链留痕（casefile log + resilience checkpoint）
 
 人工可追溯 ≠ 过程重放。留 **L1 决策证据**（能验证结论的），留 **L2 现场指针**（大块输出只存路径），删 **L3 过程噪音**（推理/被否候选/重复查询）。
 
-**每 stage 结束时追加一条 `tools/audit_log.py append`**（机器调用，不是模型写报告）：
+**每 stage 结束时追加一条 `ledger.py log`**（机器调用，不是模型写报告；自动校验 case 存在）：
 
 ```bash
-python3 /opt/audit/tools/audit_log.py append <case_id> --stage <STAGE> \
+python3 -m ledger --run-dir <run-dir> --op log --case-id <case-id> --stage <STAGE> \
     --verdict <REACHABLE|UNREACHABLE|CONFIRMED|KILL-1..5|finding> \
     --evidence "<一句话证据，file:line → sink>" \
-    [--artifact <L2 指针路径>] [--reason <KILL 原因/决策理由>] [--agent <agent名>]
+    [--artifact <L2 指针路径>] [--agent <agent名>]
+```
+
+**长等待步骤前（CPG 构建/后台 job/子代理派发）先落盘中间结论**（防"分析完毕结论未落地"式失败）:
+
+```bash
+python3 -m resilience checkpoint --run-dir <run-dir> --case <case-id> --stage <STAGE> \
+    --summary '<one-line 可验证结论>'      # resume 列出全部快照
 ```
 
 **各 stage 留什么 / 不留什么：**
@@ -341,7 +355,7 @@ python3 /opt/audit/tools/audit_log.py append <case_id> --stage <STAGE> \
 
 **判断标准**：这个细节"能验证某条结论"就留；只是"记录我做过"就删。~200B/条，一个 case 全程 20-40 条 ≈ 4-8KB，不膨胀。
 
-查看：`python3 /opt/audit/tools/audit_log.py view <case_id>`（人类可读时间线）或 `list --stage HUNT`。
+查看：`python3 -m ledger --run-dir <run-dir> --op list`（案件时间线）或 `python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py logview <run-dir> <case-id>`。
 
 ### CHAIN: One agent per pipeline run
 
@@ -367,17 +381,14 @@ If chain analysis fails, don't block the pipeline — emit report without chains
 
 Final output must conform to `schemas/stage-report.json`. Required coverage and findings arrays.
 
-Each finding in the report carries: vuln_class, language, cwe_id, cvss_vector, cvss_score, poc_path, severity. The cwe_id/cvss fields map directly to the KVE report template (`~/.pi/agent/skills/exploit_dig_ways/SKILL.md`).
+Each finding in the report carries: vuln_class, language, cwe_id, cvss_vector, cvss_score, poc_path, severity. The cwe_id/cvss fields map directly to the KVE report template (见 preset 报告要求)。
 
 ## Token Tracking
 
 After each subagent completes, record token usage in the pipeline-run case:
 
 ```
-CaseUpdate(<pipeline-case-id>, {
-  nextStep: "stage: <stage> complete — <n> findings
-             tokens: <input> in / <output> out"
-})
+casefile.py update <run-dir> <pipeline-case-id> --field nextStep="stage: <stage> complete — <n> findings tokens: <input> in / <output> out"
 ```
 
 Target token budgets per stage (cumulative input+output):
