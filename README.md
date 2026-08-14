@@ -40,6 +40,8 @@ bash install-c.sh
 |------|------|------|
 | joern / joern-parse / joern-scan | CPG 构建 + 污点查询 + querydb 扫描 | `command -v joern` |
 | codebase-memory-mcp | 全库图谱、调用链追踪 | `command -v codebase-memory-mcp` |
+| audit-tools | Joern/codebase-memory 硬封装（禁裸 joern） | `command -v audit-tools` |
+| audit-runner (skills/audit-runner/) | 确定性编排层（CPG 生命周期/门禁/覆盖/账本/快照） | `python3 doctor.py` |
 | pi-lsp（clangd） | C/C++ 语义级验证（references/definition/hover/diagnostics） | `lsp_*` 工具 |
 | gcc/clang + valgrind | sanitizer 复现（VALIDATE 阶段） | `command -v gcc valgrind` |
 
@@ -99,15 +101,45 @@ RECON → HUNT → GAPFIL(循环) → TRACE → VALIDATE → CHAIN → REPORT
 
 与 pi-casefile 的 `/xp`（web 渗透工作流，opt-in）不同：这是代码审计专用且**始终开启** — 技能作为包加载，案件意识也应常驻。无需 `/xp on`。
 
+## audit-runner（迁移优先脚手架层）
+
+`skills/audit-runner/` 是本流水线的**确定性编排层**：把审计中反复踩到的、100% 可脚本化的过程固化成代码，agent 预算只花在判断上。由 libkylin-ai-base 实盘审计的失败样本驱动（CPG 状态混乱 ×3、joern println 契约 ×8、重复案件 ×2、结论未落地 ×2）。
+
+| 模块 | 功能 | 命令 |
+|------|------|------|
+| `doctor.py` | 迁移健康检查（5 项：skill-tree/preset/schemas/toolchain/cache），FAIL 自带 fix 指引 | `python3 doctor.py` |
+| `config.py` | 路径/env/工具链解析（零绝对路径，`VDH_PRESET`/`VDH_SCHEMAS`/`AUDIT_TOOLS_CACHE`/`VDH_SCRATCH` 可覆盖） | `python3 config.py` |
+| `cpg.py` | CPG 生命周期：绝对 root 构建 + 缓存命中 + 干净 cwd + 查询模板（自动 println 包裹 + 空结果降级标记） | `python3 -m cpg build/query/clean` |
+| `gate.py` | stage schema 门禁（quick-validate + casefile.py 权威校验） | `python3 -m gate --run-dir ... --stage ... --output ...` |
+| `coverage.py` | 覆盖状态机（CHECKED/UNCHECKED → COVERED/INCOMPLETE/SKIPPED/NOT_FOUND）+ GAPFIL 队列 | `python3 -m coverage --input entries.json` |
+| `ledger.py` | 案件账本封装（add 自动去重 / log 校验 case 存在 / list） | `python3 -m ledger --run-dir ... --op add --dedup-key ...` |
+| `resilience.py` | 中间结论快照（长等待步骤前落盘，防"分析完毕结论未落地"） | `python3 -m resilience checkpoint/resume/done` |
+| `queries/` | joern 查询模板（sinks/entry/error_deref，全部 println 强制） | `python3 -m cpg query --file queries/sinks.sc` |
+
+**使用纪律（pipeline skill §Skills to load）**：`audit-runner` 每次运行前必加载；不用它的确定性过程不算"走流水线"——CPG 构建/查询、schema 门禁、覆盖统计、账本登记、中间快照必须经脚手架，判断（kill 税、边界、语义、PoC 设计）留在 agent。
+
+**迁移指南（3 步）**：
+```bash
+# 1. 拷贝整个 skills/audit-runner/ 到新环境技能树
+# 2. 按需 export VDH_PRESET / VDH_SCHEMAS / AUDIT_TOOLS_CACHE（默认路径不匹配时）
+# 3. python3 doctor.py   # 5/5 全绿即就绪；FAIL 项有 fix 指引
+```
+
 ## 目录结构
 
 ```
 why-c-vulunerable/
 ├── agents/                  # c-harness, c-auditor, c-tracer, c-exploit, c-chain
 ├── skills/
-│   ├── pipeline/SKILL.md    # 阶段机编排（代码审计版）
-│   └── code-audit/SKILL.md  # C/C++/Shell/Python CWE 方法论（替代 web-pentest）
+│   ├── pipeline/SKILL.md    # 阶段机编排（代码审计版）+ 技能加载清单
+│   ├── audit-runner/        # 迁移优先脚手架层（doctor/cpg/gate/coverage/ledger/resilience + queries/）
+│   ├── audit-tools/SKILL.md # Joern/codebase-memory 硬封装
+│   ├── code-audit/SKILL.md  # C/C++/Shell/Python CWE 方法论（替代 web-pentest）
+│   └── tricks/SKILL.md      # 卡住时的思考框架 + kill 分类
 ├── schemas/                 # stage-finding/trace/validation/chain/report（CWE 语义）
+├── extensions/              # audit-tools.py / case-context.ts
+├── tools/                   # audit_log.py / sink_filter.py / denoise_rules.json
+├── tests/                   # test-audit-tools.sh
 ├── install-c.sh             # 安装 agents 到独立命名空间（不覆盖原 xpi）
 └── package.json             # 独立包名 pi-xpi-c
 ```
