@@ -135,6 +135,29 @@ def clean_workspace(root: str) -> list:
     return removed
 
 
+def fork(src: str, n: int, out_dir: str) -> dict:
+    """把 CPG 复制成 n 份独立副本（每个子代理一份 → 真并行, 无锁竞争）。
+
+    背景: 同一 CPG 的 joern 查询被 flock 串行化（每查询 ~13s, 8 agent 排队）。
+    小 CPG（MB 级）复制成本毫秒级, 分区后每个 agent 用私有副本, 从构造上
+    消除共享资源竞争 — 互斥锁不再需要（保留作纵深防御）。
+    大 CPG（数百 MB）按 n 复制有磁盘/时间成本, 由调用方决定是否 fork
+    （建议阈值: >100MB 用共享+锁, ≤100MB 用 fork）。
+    """
+    src_path = Path(src)
+    if not src_path.is_file():
+        return {"ok": False, "error": f"src 不是文件: {src}"}
+    out_dir_path = Path(out_dir)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    forks = []
+    for i in range(n):
+        dst = out_dir_path / f"fork-{i}.cpg"
+        shutil.copy2(src_path, dst)
+        forks.append(str(dst))
+    return {"ok": True, "src": str(src_path), "forks": forks,
+            "size": src_path.stat().st_size, "n": n}
+
+
 def _cli() -> int:
     ap = argparse.ArgumentParser(prog="cpg")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -149,6 +172,9 @@ def _cli() -> int:
 
     p = sub.add_parser("clean"); p.add_argument("--root", required=True)
 
+    p = sub.add_parser("fork"); p.add_argument("--src", required=True)
+    p.add_argument("--n", type=int, required=True); p.add_argument("--dir", required=True)
+
     args = ap.parse_args()
     if args.cmd == "build":
         res = build(args.root, args.force, args.out)
@@ -156,6 +182,8 @@ def _cli() -> int:
         res = query(args.cpg, Path(args.file).read_text(), args.timeout)
     elif args.cmd == "clean":
         res = {"ok": True, "removed": clean_workspace(args.root)}
+    elif args.cmd == "fork":
+        res = fork(args.src, args.n, args.dir)
     else:
         return 2
 

@@ -52,9 +52,16 @@ audit-runner/
 python3 doctor.py                                  # 迁移后第一件事
 python3 -m cpg build --root <abs-target>           # CPG 构建+缓存+干净 cwd（须从本目录运行, 或改用绝对路径）
 python3 /abs/path/to/audit-runner/cpg.py query --cpg <cpg> --file q.sc   # 绝对路径形式（任意 cwd 可用）
+python3 /abs/path/to/audit-runner/cpg.py fork --src <cpg> --n <N> --dir <forks/>  # 每子代理一份私有副本
 python3 -m gate validate <run-dir> <stage> <out>   # schema 门禁
 python3 -m coverage report <auditor-outputs.json>  # 覆盖状态机 + GAPFIL 清单
 python3 -m resilience checkpoint <case> <stage> <summary>  # 中间结论落盘
 ```
 
 > 注: `python3 -m cpg` 依赖 audit-runner 在 PYTHONPATH/当前目录; 子代理环境里请用**绝对路径**调用（`python3 /home/xvmo/why-c-vulunerable/skills/audit-runner/cpg.py ...`）。
+
+## 并发策略（HUNT 多代理并行）
+
+1. **小 CPG（≤100MB, 推荐）**: 派发前 `cpg.py fork --n <代理数>` 一次, 把 `fork-i.cpg` 路径写进第 i 个代理的提示词 → 每代理私有副本, 真并行, 无锁竞争（实测 3 并发 ≈ 单查询耗时, 串行基线 ≈ 3×）。
+2. **大 CPG（>100MB）**: 共享一份 + audit-tools flock 串行化（正确性优先, 后到排队）。
+3. 锁（`_cpg_lock`）保留为纵深防御: 即使误用共享路径也不会损坏。
