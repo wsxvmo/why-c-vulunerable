@@ -1,0 +1,43 @@
+{
+  "name": "pi-xpi-c",
+  "version": "0.1.0",
+  "description": "C/C++/Shell/Python static code audit pipeline for Pi Agent — Joern + codebase-memory + clangd based, no target compilation, no Web semantics. Fork of @xaccefy/pi-xpi.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "code-audit",
+    "static-analysis",
+    "cwe",
+    "joern",
+    "c",
+    "cpp",
+    "shell",
+    "python",
+    "security"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "agents/",
+    "skills/",
+    "schemas/",
+    "extensions/",
+    "install-c.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/case-context.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "dependencies": {
+    "@xaccefy/pi-casefile": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.83.0"
+  }
+}

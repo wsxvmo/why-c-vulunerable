@@ -1,0 +1,113 @@
+# pi-xpi-c — C/C++/Shell/Python 代码审计流水线
+
+基于 pi-xpi（XPI）架构改造的 **静态代码审计流水线**，面向 C/C++、Shell、Python 源码。保留原架构的 5-agent 分工、schema 硬门禁、PoC 沙箱确认、覆盖追踪机制，但把 Web 渗透语义替换为代码审计语义：
+
+- **验证手段**：本地 sanitizer 复现（ASAN/UBSAN/valgrind），不编译目标项目、不打线上目标
+- **分析引擎**：Joern（CPG，fuzzy 模式，无需编译）+ codebase-memory-mcp（tree-sitter 图谱）+ clangd/pi-lsp（语义验证）
+- **无 CPG/CodeQL 之外的第三方依赖**：不用 CodeQL，Web 工具（httpx/ffuf/nuclei）全部移除
+
+## 安装
+
+### ⚡ 一键安装（推荐）
+
+```bash
+cd ~/why-c-vulunerable
+bash bootstrap.sh
+```
+
+自动完成：工具链检测 → 5 个 c-* agents 安装 → pi 包注册（skills + case-context 扩展）→ 验证。
+
+```bash
+bash bootstrap.sh --check   # 只查工具链 + 安装状态
+bash bootstrap.sh --force   # 强制重新注册包
+```
+
+安装后：`/reload` → `/audit on` → 告诉 agent "对 <目标> 跑代码审计流水线"。
+
+### 手动安装（分步）
+
+```bash
+# 方式一：本地路径安装（推荐，独立包名不与原 pi-xpi 冲突）
+pi install /home/xvmo/why-c-vulunerable
+
+# 方式二：仅安装 agents（独立命名空间，不覆盖原 xpi agents）
+bash install-c.sh
+```
+
+### 依赖环境
+
+| 依赖 | 用途 | 检查 |
+|------|------|------|
+| joern / joern-parse / joern-scan | CPG 构建 + 污点查询 + querydb 扫描 | `command -v joern` |
+| codebase-memory-mcp | 全库图谱、调用链追踪 | `command -v codebase-memory-mcp` |
+| pi-lsp（clangd） | C/C++ 语义级验证（references/definition/hover/diagnostics） | `lsp_*` 工具 |
+| gcc/clang + valgrind | sanitizer 复现（VALIDATE 阶段） | `command -v gcc valgrind` |
+
+**不依赖**：CodeQL、Joern 以外的重型分析器、任何 Web 渗透工具、目标项目编译能力。
+
+## 工具
+
+| 工具 | 用途 |
+|------|------|
+| CaseAdd / CaseUpdate / PromoteFinding | 案件台账 + 硬 PoC 门禁（sandbox 内 exit 0 才确认）|
+| CaseGet / CaseList / CaseSearch | 浏览案件 |
+| CaseLink / CaseUnlink | 漏洞链记录 |
+| CaseReport | Markdown 报告（对接 KVE 模板）|
+| lsp_diagnostics / lsp_definition / lsp_references / lsp_hover / lsp_symbols | clangd 语义验证 |
+| todo / /todos | 任务列表 |
+
+## 快速开始
+
+```
+告诉 harness 目标即可，例如：
+"对 ~/exploit-src/libsecurity1 跑一次完整代码审计流水线"
+```
+
+Skills（`skills/pipeline` → skill 名 `codeaudit-pipeline`、`skills/code-audit`）自动加载进 agent 上下文。无需斜杠命令 — 直接让 agent 开猎即可。
+
+## 流水线阶段机
+
+```
+RECON → HUNT → GAPFIL(循环) → TRACE → VALIDATE → CHAIN → REPORT
+  ↑___________________|                |
+  └────── FEEDBACK ────┘              FIX (可选)
+```
+
+| 阶段 | 做什么 | 门禁 |
+|------|--------|------|
+| RECON | 入口点清单 + 工具链验证 + CPG 构建（fuzzy）| 目标/工具链记录 |
+| HUNT | 按 CWE 类×语言并发审计；Joern 强制引擎；codebase-memory 粗筛 | stage-finding.json |
+| GAPFIL | INCOMPLETE 类补查（按入口点粒度）| 覆盖追踪 |
+| TRACE | Joern 污点查询 → clangd 逐跳验证 → data_flow 值级路径 | stage-trace.json + REACHABLE |
+| VALIDATE | 自包含 repro + sanitizer 触发（不编译目标）| stage-validation.json + exit 0 |
+| CHAIN | 已确认漏洞组合链（cwe_id/cvss）| stage-chain.json |
+| REPORT | KVE 模板对接报告（cwe_id/cvss_vector/cvss_score）| stage-report.json |
+
+## 核心规则
+
+1. **绝不编译目标项目**。只编译从目标提取的自包含 repro 文件。
+2. **Joern/clangd 输出 = 候选**，每个 finding 必须 hop-by-hop 证据（entry → sink）。
+3. **确认 = sanitizer 真实触发**（ASAN heap-buffer-overflow / UAF / valgrind invalid read…），不是静态推理。
+4. **Shell 文件**走 codebase-memory + bash-language-server 通道（Joern 无 shell 前端）。
+5. 无 OOB、无限速、无 HTTP 探测 — 这是本地代码审计，不是 Web 渗透。
+
+## 自动注入（case-context 扩展）
+
+包内 `extensions/case-context.ts` 在每次会话开始时自动注入：
+1. **Code Audit Workflow 纪律**（案件生命周期状态机 + 5 条硬门禁 + kill checklist）
+2. **活动案件列表**（`<casefile_context>`：confirmed/investigating/hypothesis + nextStep）
+
+与 pi-casefile 的 `/xp`（web 渗透工作流，opt-in）不同：这是代码审计专用且**始终开启** — 技能作为包加载，案件意识也应常驻。无需 `/xp on`。
+
+## 目录结构
+
+```
+why-c-vulunerable/
+├── agents/                  # c-harness, c-auditor, c-tracer, c-exploit, c-chain
+├── skills/
+│   ├── pipeline/SKILL.md    # 阶段机编排（代码审计版）
+│   └── code-audit/SKILL.md  # C/C++/Shell/Python CWE 方法论（替代 web-pentest）
+├── schemas/                 # stage-finding/trace/validation/chain/report（CWE 语义）
+├── install-c.sh             # 安装 agents 到独立命名空间（不覆盖原 xpi）
+└── package.json             # 独立包名 pi-xpi-c
+```

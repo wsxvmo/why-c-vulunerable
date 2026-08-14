@@ -1,0 +1,20 @@
+# 敏感信息
+*.db
+*.db-wal
+*.db-shm
+.pi/
+.poc/
+workspace/
+
+# 构建产物
+docker/.build/
+docker/.build-log.txt
+docker/.push-log.txt
+tools/.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
