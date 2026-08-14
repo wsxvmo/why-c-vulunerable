@@ -436,7 +436,19 @@ def mcp_main() -> int:
             if tname in TOOLS:
                 try:
                     resp = TOOLS[tname](targs)
-                    resp = {"content": [{"type": "text", "text": json.dumps(resp, ensure_ascii=False, indent=2)}], "isError": not resp.get("ok", False)}
+                    # MCP 返回**紧凑有界值**（教训: 全量 stdout/stderr 可达 MB 级,
+                    # 单行 JSON 撑爆客户端读缓冲 → 'value is not lossless JSON'）。
+                    # 裁剪 stdout/stderr, 丢弃 cmd, 只留小字段; 大输出走 CLI 通道拿全文。
+                    compact = {}
+                    for k in ("ok", "exit", "elapsed", "timeout", "cached", "cpg", "error"):
+                        if k in resp:
+                            compact[k] = resp[k]
+                    for k in ("stdout", "stderr"):
+                        v = resp.get(k) or ""
+                        if len(v) > 20000:
+                            v = v[:20000] + "\n...[audit-tools mcp] output trimmed (%d chars, 用 bash CLI 拿全文)" % len(resp.get(k))
+                        compact[k] = v
+                    resp = {"content": [{"type": "text", "text": json.dumps(compact, ensure_ascii=False, indent=2)}], "isError": not resp.get("ok", False)}
                 except Exception as e:
                     resp = {"content": [{"type": "text", "text": json.dumps({"ok": False, "error": str(e)})}], "isError": True}
             else:
