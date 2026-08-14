@@ -52,6 +52,7 @@ The pipeline assumes the target codebase is **in scope** and the toolchain is av
    ```
    For each candidate the model confirms semantics (dbus registration / socket callback / export table / exec entry / signal handler) and records the confirmed entry-point list in the pipeline-run case. The graph gives completeness; the model gives semantics.
 6. **Privilege context recorded.** Is the target setuid? runs as root? system daemon? This determines how deep `privilege-mgmt` / `permission-assignment` hunting goes.
+7. **tricks 经验注入（前馈, 必做）.** 按目标类型从 `skills/tricks/SKILL.md` 的"章节→适用场景映射"选择相关章节, 提炼成 ≤200 字经验注入块（格式见 tricks §使用方式）, 前置到**每个**派发的 auditor/tracer 提示词开头。目的: 子代理开局即带方向感（身份可伪造性/补丁兄弟漏修/否证纪律）, 而非卡住才自救。这是把历史复盘沉淀的经验在 RECON 阶段前馈注入 — 经验库(tricks) → RECON 选择 → 注入块 → 子代理。
 
 **No compilation of the target is required or assumed.** The target may not build (missing deps, cross-compile). Static analysis (codebase-memory + clangd) and Joern fuzzy parsing never compile the target. Sanitizer repros (VALIDATE) compile only self-contained PoC files extracted from the target — never the full project.
 
@@ -129,8 +130,11 @@ Spawn multiple auditor agents concurrently, one per CWE-family class (grouped by
 ```
 Spawn multiple auditor agents concurrently:
   subagent({agent: "c-auditor",
-    task: "Hunt for <cwe-class> vulnerabilities in <target/subsystem>. ..."})
+    task: "[RECON 经验注入 · 来自 tricks] <按目标类型选取的注入块>
+           Hunt for <cwe-class> vulnerabilities in <target/subsystem>. ..."})
 ```
+
+> 注入块在 RECON 阶段生成（pipeline §Prerequisites-7），每个派发任务必须前置；不要省略——它是历史复盘经验进入本轮审计的唯一通道。
 
 Suggested class partitions (adjust to target's language mix):
 - C/C++ memory safety: buffer-overflow, out-of-bounds-read, use-after-free, double-free, integer-overflow, null-deref, uninitialized-use, format-string
