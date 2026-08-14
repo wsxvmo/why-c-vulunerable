@@ -1,0 +1,451 @@
+{
+  "$comment": "降噪规则表 v1.0 — 九大类漏洞的确定性过滤规则。来源: SEI CERT C/C++ + Microsoft SDL banned.h + POSIX/Linux 内核扩展。A级=可确定性判定; B级=部分确定(启发式); C级=纯加权。引擎: tools/sink_filter.py (joern CPG)。",
+  "version": "1.0",
+  "levels": {
+    "A": "确定性：DROP(安全丢弃) / ALERT(直接报) 均可脚本判定，零误杀",
+    "B": "部分确定性：只做降权/候选标记，需上下文",
+    "C": "纯启发式：只做加权排序，不直接判定"
+  },
+  "rules": [
+    {
+      "id": "MEM-001",
+      "function": "memcpy",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-787"],
+      "level": "A",
+      "danger_params": [0, 1, 2],
+      "drop": {"param": 2, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "MEM-002",
+      "function": "memmove",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-787"],
+      "level": "A",
+      "danger_params": [0, 1, 2],
+      "drop": {"param": 2, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "MEM-003",
+      "function": "strcpy",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-121"],
+      "level": "A",
+      "danger_params": [0, 1],
+      "drop": {"param": 1, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "MEM-004",
+      "function": "strcat",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-121"],
+      "level": "A",
+      "danger_params": [0, 1],
+      "drop": {"param": 1, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "MEM-005",
+      "function": "sprintf",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-121", "CWE-134"],
+      "level": "A",
+      "danger_params": [0, 1],
+      "drop": null,
+      "special": "format_check"
+    },
+    {
+      "id": "MEM-006",
+      "function": "vsprintf",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-134"],
+      "level": "A",
+      "danger_params": [0, 1],
+      "drop": null,
+      "special": "format_check"
+    },
+    {
+      "id": "MEM-007",
+      "function": "gets",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-242"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "always_alert"
+    },
+    {
+      "id": "MEM-008",
+      "function": "scanf",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-242"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": "format_check"
+    },
+    {
+      "id": "MEM-009",
+      "function": "sscanf",
+      "class": "memory-corruption",
+      "cwe": ["CWE-120", "CWE-242"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "format_check"
+    },
+    {
+      "id": "MEM-010",
+      "function": "alloca",
+      "class": "memory-corruption",
+      "cwe": ["CWE-770"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "MEM-011",
+      "function": "strncpy",
+      "class": "api-trap",
+      "cwe": ["CWE-170", "CWE-676"],
+      "level": "A",
+      "danger_params": [0, 1, 2],
+      "drop": null,
+      "special": "terminator_check"
+    },
+    {
+      "id": "MEM-012",
+      "function": "strncat",
+      "class": "api-trap",
+      "cwe": ["CWE-170"],
+      "level": "A",
+      "danger_params": [0, 1, 2],
+      "drop": null,
+      "special": "terminator_check"
+    },
+    {
+      "id": "CMD-001",
+      "function": "system",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "CMD-002",
+      "function": "popen",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "CMD-003",
+      "function": "execl",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "CMD-004",
+      "function": "execlp",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "CMD-005",
+      "function": "execvp",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": null
+    },
+    {
+      "id": "CMD-006",
+      "function": "execv",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": null
+    },
+    {
+      "id": "CMD-007",
+      "function": "posix_spawn",
+      "class": "command-injection",
+      "cwe": ["CWE-78"],
+      "level": "A",
+      "danger_params": [1],
+      "drop": {"param": 1, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-001",
+      "function": "fopen",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-002",
+      "function": "open",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-003",
+      "function": "openat",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [1],
+      "drop": {"param": 1, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-004",
+      "function": "unlink",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-005",
+      "function": "unlinkat",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [1],
+      "drop": {"param": 1, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-006",
+      "function": "mkdir",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-007",
+      "function": "rmdir",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-008",
+      "function": "remove",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-009",
+      "function": "rename",
+      "class": "path-traversal",
+      "cwe": ["CWE-22"],
+      "level": "A",
+      "danger_params": [0, 1],
+      "drop": null,
+      "special": null
+    },
+    {
+      "id": "PATH-010",
+      "function": "chmod",
+      "class": "permission",
+      "cwe": ["CWE-732"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": null
+    },
+    {
+      "id": "PATH-011",
+      "function": "access",
+      "class": "toctou",
+      "cwe": ["CWE-367"],
+      "level": "B",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": "toctou_pair"
+    },
+    {
+      "id": "PATH-012",
+      "function": "stat",
+      "class": "toctou",
+      "cwe": ["CWE-367"],
+      "level": "B",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": "toctou_pair"
+    },
+    {
+      "id": "INT-001",
+      "function": "malloc",
+      "class": "integer-overflow",
+      "cwe": ["CWE-190", "CWE-131"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": "arith_check"
+    },
+    {
+      "id": "INT-002",
+      "function": "calloc",
+      "class": "integer-overflow",
+      "cwe": ["CWE-190", "CWE-131"],
+      "level": "A",
+      "danger_params": [0, 1],
+      "drop": {"param": 0, "kind": "literal"},
+      "special": "arith_check"
+    },
+    {
+      "id": "INT-003",
+      "function": "realloc",
+      "class": "integer-overflow",
+      "cwe": ["CWE-190", "CWE-131"],
+      "level": "A",
+      "danger_params": [1],
+      "drop": {"param": 1, "kind": "literal"},
+      "special": "arith_check"
+    },
+    {
+      "id": "API-001",
+      "function": "setuid",
+      "class": "api-trap",
+      "cwe": ["CWE-273"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "retval_check"
+    },
+    {
+      "id": "API-002",
+      "function": "setgid",
+      "class": "api-trap",
+      "cwe": ["CWE-273"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "retval_check"
+    },
+    {
+      "id": "API-003",
+      "function": "seteuid",
+      "class": "api-trap",
+      "cwe": ["CWE-273"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "retval_check"
+    },
+    {
+      "id": "API-004",
+      "function": "setresuid",
+      "class": "api-trap",
+      "cwe": ["CWE-273"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "retval_check"
+    },
+    {
+      "id": "API-005",
+      "function": "chroot",
+      "class": "api-trap",
+      "cwe": ["CWE-273"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "retval_check"
+    },
+    {
+      "id": "API-006",
+      "function": "mktemp",
+      "class": "unsafe-temp",
+      "cwe": ["CWE-377"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "always_alert"
+    },
+    {
+      "id": "API-007",
+      "function": "tmpnam",
+      "class": "unsafe-temp",
+      "cwe": ["CWE-377"],
+      "level": "A",
+      "danger_params": [0],
+      "drop": null,
+      "special": "always_alert"
+    },
+    {
+      "id": "KERN-001",
+      "function": "copy_to_user",
+      "class": "kernel-info-leak",
+      "cwe": ["CWE-457"],
+      "level": "B",
+      "danger_params": [0, 1],
+      "drop": null,
+      "special": "memset_check"
+    },
+    {
+      "id": "KERN-002",
+      "function": "copy_from_user",
+      "class": "kernel-input",
+      "cwe": ["CWE-20"],
+      "level": "B",
+      "danger_params": [0, 2],
+      "drop": null,
+      "special": null
+    },
+    {
+      "id": "HARD-001",
+      "function": null,
+      "class": "hardcoded-secret",
+      "cwe": ["CWE-798"],
+      "level": "C",
+      "danger_params": [],
+      "drop": null,
+      "special": "string_heuristics"
+    }
+  ]
+}

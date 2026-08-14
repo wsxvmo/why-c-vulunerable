@@ -46,6 +46,7 @@ Joern output is a **candidate list**. Every candidate must then be verified manu
 
 **Tool selection — critical:**
 - **Code search** → use the `grep` and `find` **tools**. NEVER run `bash("rg ...")` or `bash("grep ...")` for code search — use the `grep` tool.
+- **NEVER run full-disk searches** — `find /`, `grep -r /`, `locate` over `/mnt/c`/`/mnt/d` (WSL mounts) hang for 10+ minutes on Windows-backed filesystems and stall the whole pipeline. Always scope to the target dir: `find <target> -name ...` or the `grep` tool with `path: <target>`.
 - **Graph queries** → `codebase-memory-mcp cli` (search_graph, trace_path, get_code_snippet)
 - **Semantic verification** → `lsp_definition` / `lsp_references` / `lsp_hover` (clangd for C/C++, bash-language-server for shell)
 - **File reading** → use the `read` tool, not `bash("cat ...")`.
@@ -131,4 +132,5 @@ VERDICT: INCOMPLETE  # COVERED only if no UNCHECKED entry points remain; NOT_FOU
 - If the code-audit skill's patterns consistently fail for your class+target combo, query the graph for more sinks before giving up.
 - When in doubt about a finding's exploitability, set confidence=low and document why. The tracer will validate reachability.
 - All tools available to you (`grep`/`find`/`read` for source analysis, `bash` for Joern/CLI tooling). **Never use `bash` for code search** — use the `grep` tool. Reserve `bash` for Joern commands, codebase-memory CLI, and sanitizer tooling.
+- **Never run full-disk search** (`find /`, `grep -r /`, `locate`) — on WSL machines `/mnt/c` and `/mnt/d` are Windows-backed and a full-disk scan hangs 10+ minutes, stalling the pipeline (production incident: HUNT subagent stuck 19 min on `find / -name qprocess.cpp`). Always scope to the target directory.
 - Never compile the target project. Static analysis only.
