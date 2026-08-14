@@ -37,9 +37,9 @@ Each stage produces a structured output. The next stage validates it before star
 The pipeline assumes the target codebase is **in scope** and the toolchain is available. Before dispatching the first auditor, verify:
 
 1. **Target is defined.** Record the repo path + language distribution in the pipeline-run case `target` + `assumptions`. Every analysis must stay inside this codebase.
-2. **Toolchain is present.** Static analysis relies on `codebase-memory-mcp` (graph) + `grep`/`read` + `audit-runner`. Sanitizer validation relies on `gcc`/`clang` with `-fsanitize=address,undefined`, `valgrind`. Run `python3 <skills>/audit-runner/doctor.py` at run start — 5 项健康检查（skill-tree/preset/schemas/toolchain/cache），FAIL 项自带 fix 指引。Record what's available.
+2. **Toolchain is present.** Static analysis relies on `codebase-memory-mcp` (graph) + `grep`/`read` + `audit-runner`. Sanitizer validation relies on `gcc`/`clang` with `-fsanitize=address,undefined`, `valgrind`. Run `audit-runner doctor` at run start — 5 项健康检查（skill-tree/preset/schemas/toolchain/cache），FAIL 项自带 fix 指引。Record what's available.
 3. **Joern is available.** The pipeline uses Joern (fuzzy mode, no compilation needed) as a mandatory analysis engine for HUNT (joern-scan querydb) and TRACE (taint propagation queries). doctor.py 的 toolchain 检查覆盖 `joern joern-parse joern-scan audit-tools codebase-memory-mcp`。If missing, ask the user before starting.
-4. **Target indexed in codebase-memory-mcp.** Run `codebase-memory-mcp cli index_repository --repo-path <target>` (with extension-completion pre-step for extensionless files) if not already indexed. Record the project name. CPG 构建用 `python3 -m cpg build --root <abs-target>`（绝对 root + 显式输出 + 缓存命中 + 干净 cwd）。
+4. **Target indexed in codebase-memory-mcp.** Run `codebase-memory-mcp cli index_repository --repo-path <target>` (with extension-completion pre-step for extensionless files) if not already indexed. Record the project name. CPG 构建用 `audit-runner cpg build --root <abs-target>`（绝对 root + 显式输出 + 缓存命中 + 干净 cwd）。
 5. **Input surface identified.** Enumerate entry points in RECON **with a graph, not by hand** — hand/grep enumeration is the #1 source of blind spots (missing submodules → INCOMPLETE coverage). 首选 **codebase-memory 图**（索引可用性由 doctor.py 第 7 项判定）; 索引不可用时**文档化回退 joern CPG 图**（cpg.py query + queries/entry.sc）。两种都是图基枚举; 工具分层: RECON 用 codebase-memory 找攻击面, HUNT/TRACE 用 joern 深挖 sink/污点。Use codebase-memory queries to get the full candidate list, then confirm semantics with the model:
    ```bash
    # 未被任何函数调用的 Function = 入口候选（main/回调/导出/信号/dbus 注册）
@@ -78,10 +78,10 @@ casefile.py init <run-dir> --title "Pipeline: <target> <timestamp>" --target "<t
 ```
 
 Record per-stage progress:
-- 发现登记: `python3 -m ledger --run-dir <run-dir> --op add --title "<short>" --bug-class <class> --dedup-key <kw>` (自动去重, 防重复案件)
+- 发现登记: `audit-runner ledger --run-dir <run-dir> --op add --title "<short>" --bug-class <class> --dedup-key <kw>` (自动去重, 防重复案件)
 - 状态推进: `casefile.py update <run-dir> <case-id> --status ... --field key=value`
-- 证据留痕: `python3 -m ledger --run-dir <run-dir> --op log --case-id <id> --stage <S> --verdict <V> --evidence "<one-line>"` (自动校验 case 存在)
-- 中间结论快照: `python3 -m resilience checkpoint --run-dir <run-dir> --case <id> --stage <S> --summary '<one-line>'` — 长等待步骤前必做, 防"分析完毕结论未落地"
+- 证据留痕: `audit-runner ledger --run-dir <run-dir> --op log --case-id <id> --stage <S> --verdict <V> --evidence "<one-line>"` (自动校验 case 存在)
+- 中间结论快照: `audit-runner resilience checkpoint --run-dir <run-dir> --case <id> --stage <S> --summary '<one-line>'` — 长等待步骤前必做, 防"分析完毕结论未落地"
 - `nextStep: "stage: recon complete, findings: 3, moving to validate"` after each stage (run.json)
 - `assumptions: ["COVERED: buffer-overflow, use-after-free | SKIPPED: unsafe-deserialization | NOT_FOUND: command-injection"]` for coverage (由 `coverage.py` 状态机产出)
 
@@ -89,7 +89,7 @@ This gives you resume capability: on restart, `casefile.py list <run-dir>` + `re
 
 ## Schema Validation at Stage Boundaries
 
-Every stage output must conform to its schema before the next stage begins. **用 `python3 -m gate --run-dir <run-dir> --stage <finding|trace|validation|chain|report> --output <output.json>` 校验** — quick-validate（必需字段独立检查）+ casefile.py validate（权威门禁）。
+Every stage output must conform to its schema before the next stage begins. **用 `audit-runner gate --run-dir <run-dir> --stage <finding|trace|validation|chain|report> --output <output.json>` 校验** — quick-validate（必需字段独立检查）+ casefile.py validate（权威门禁）。
 
 ### Stage Schemas (in `schemas/`, 路径由 audit-runner/config.py 解析):
 
@@ -103,7 +103,7 @@ Every stage output must conform to its schema before the next stage begins. **�
 
 **Validation procedure:**
 ```
-1. python3 -m gate --run-dir <run-dir> --stage <stage> --output <output.json>
+1. audit-runner gate --run-dir <run-dir> --stage <stage> --output <output.json>
 2. QUICK-PASS + AUTHORITATIVE exit=0 → 通过; 否则回退给产出代理修复
 3. 若缺字段/畸形 → 回退: "Your output is missing: <fields>. Please fix."
 4. Re-validate after repair. Max 2 repair attempts per stage.
@@ -147,11 +147,11 @@ Suggested class partitions (adjust to target's language mix):
 **Every auditor MUST run the Joern engine as part of hunting** (经 audit-runner/audit-tools, 禁止裸 joern):
 ```
 # 1. Build CPG once per target (fuzzy mode — no compilation of the target):
-python3 -m cpg build --root <abs-target>          # 绝对 root; 缓存命中; 干净 cwd
+audit-runner cpg build --root <abs-target>          # 绝对 root; 缓存命中; 干净 cwd
 # 2. Run the querydb sweep (100+ built-in CVE queries):
 audit-tools cli scan_cpg --cpg <cpg> --tags <cwe>
 # 3. For the assigned class, run targeted queries (模板在 skills/audit-runner/queries/):
-python3 -m cpg query --cpg <cpg> --file queries/sinks.sc --timeout 240
+audit-runner cpg query --cpg <cpg> --file queries/sinks.sc --timeout 240
 #    println 已强制; 空结果(仅 INFO 行) → 转 grep 兜底, 不重试白等
 # Joern output = candidate list. Every candidate still needs read/grep 逐跳验证
 # + evidence — Joern never confirms anything by itself.
@@ -225,7 +225,7 @@ For each hypothesis that passed validation:
 **Tracer MUST use the Joern taint engine as the primary path-finder** (经 audit-runner, 禁止裸 joern):
 ```
 # 1. Run taint query on the CPG built during HUNT (or rebuild via cpg.py if missing):
-python3 -m cpg query --cpg <cpg> --file /tmp/taint.sc --timeout 240
+audit-runner cpg query --cpg <cpg> --file /tmp/taint.sc --timeout 240
 #    taint 模板: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
 # 2. Joern output = candidate data-flow path (expression-level, cross-procedure)
 # 3. Verify each hop with read/grep (逐符号确认: 真实存在/无同名碰撞/类型匹配)
@@ -267,7 +267,7 @@ Sanitizer repros run through `PromoteFinding` in the sandbox (exit 0 = triggered
 
 ```
 For each CWE class with "INCOMPLETE" coverage:
-  python3 -m coverage --input <auditor-entries.json>   # 生成 GAPFIL 队列（含 CHECKED 列表）
+  audit-runner coverage --input <auditor-entries.json>   # 生成 GAPFIL 队列（含 CHECKED 列表）
   subagent({agent: "c-auditor",
     task: "Hunt for <class> in <target>. Previous hunts found nothing.
              These entry points are ALREADY CHECKED — do not re-tread them: <checked list>.
@@ -289,7 +289,7 @@ that wasn't previously audited):
 
 Coverage is the pipeline's self-check. It answers: "what did we actually test vs what did we skip or miss?"
 
-After the hunt + gapfill stages, emit a coverage summary in the pipeline-run case. **把各审计代理的 CHECKED/UNCHECKED 条目喂给 `python3 -m coverage --input <auditor-entries.json>`**（状态机: UNCHECKED 空+有假设 → COVERED; UNCHECKED 非空 → INCOMPLETE; 空+0 假设 → NOT_FOUND; 显式 reason → SKIPPED）:
+After the hunt + gapfill stages, emit a coverage summary in the pipeline-run case. **把各审计代理的 CHECKED/UNCHECKED 条目喂给 `audit-runner coverage --input <auditor-entries.json>`**（状态机: UNCHECKED 空+有假设 → COVERED; UNCHECKED 非空 → INCOMPLETE; 空+0 假设 → NOT_FOUND; 显式 reason → SKIPPED）:
 
 ```
 auditor entries (每代理一行):
@@ -334,7 +334,7 @@ Rules:
 **每 stage 结束时追加一条 `ledger.py log`**（机器调用，不是模型写报告；自动校验 case 存在）：
 
 ```bash
-python3 -m ledger --run-dir <run-dir> --op log --case-id <case-id> --stage <STAGE> \
+audit-runner ledger --run-dir <run-dir> --op log --case-id <case-id> --stage <STAGE> \
     --verdict <REACHABLE|UNREACHABLE|CONFIRMED|KILL-1..5|finding> \
     --evidence "<一句话证据，file:line → sink>" \
     [--artifact <L2 指针路径>] [--agent <agent名>]
@@ -343,7 +343,7 @@ python3 -m ledger --run-dir <run-dir> --op log --case-id <case-id> --stage <STAG
 **长等待步骤前（CPG 构建/后台 job/子代理派发）先落盘中间结论**（防"分析完毕结论未落地"式失败）:
 
 ```bash
-python3 -m resilience checkpoint --run-dir <run-dir> --case <case-id> --stage <STAGE> \
+audit-runner resilience checkpoint --run-dir <run-dir> --case <case-id> --stage <STAGE> \
     --summary '<one-line 可验证结论>'      # resume 列出全部快照
 ```
 
@@ -359,7 +359,7 @@ python3 -m resilience checkpoint --run-dir <run-dir> --case <case-id> --stage <S
 
 **判断标准**：这个细节"能验证某条结论"就留；只是"记录我做过"就删。~200B/条，一个 case 全程 20-40 条 ≈ 4-8KB，不膨胀。
 
-查看：`python3 -m ledger --run-dir <run-dir> --op list`（案件时间线）或 `python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py logview <run-dir> <case-id>`。
+查看：`audit-runner ledger --run-dir <run-dir> --op list`（案件时间线）或 `python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py logview <run-dir> <case-id>`。
 
 ### CHAIN: One agent per pipeline run
 

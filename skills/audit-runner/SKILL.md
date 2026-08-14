@@ -50,15 +50,15 @@ audit-runner/
 
 ```bash
 python3 doctor.py                                  # 迁移后第一件事
-python3 -m cpg build --root <abs-target>           # CPG 构建+缓存+干净 cwd（须从本目录运行, 或改用绝对路径）
-python3 /abs/path/to/audit-runner/cpg.py query --cpg <cpg> --file q.sc   # 绝对路径形式（任意 cwd 可用）
-python3 /abs/path/to/audit-runner/cpg.py fork --src <cpg> --n <N> --dir <forks/>  # 每子代理一份私有副本
-python3 -m gate validate <run-dir> <stage> <out>   # schema 门禁
-python3 -m coverage report <auditor-outputs.json>  # 覆盖状态机 + GAPFIL 清单
-python3 -m resilience checkpoint <case> <stage> <summary>  # 中间结论落盘
+audit-runner cpg build --root <abs-target>           # CPG 构建+缓存+干净 cwd（须从本目录运行, 或改用绝对路径）
+python3 audit-runner cpg query --cpg <cpg> --file q.sc   # 绝对路径形式（任意 cwd 可用）
+python3 audit-runner cpg fork --src <cpg> --n <N> --dir <forks/>  # 每子代理一份私有副本
+audit-runner gate validate <run-dir> <stage> <out>   # schema 门禁
+audit-runner coverage report <auditor-outputs.json>  # 覆盖状态机 + GAPFIL 清单
+audit-runner resilience checkpoint <case> <stage> <summary>  # 中间结论落盘
 ```
 
-> 注: `python3 -m cpg` 依赖 audit-runner 在 PYTHONPATH/当前目录; 子代理环境里请用**绝对路径**调用（`python3 /home/xvmo/why-c-vulunerable/skills/audit-runner/cpg.py ...`）。
+> 注: `audit-runner cpg` 依赖 audit-runner 在 PYTHONPATH/当前目录; 子代理环境里请用**绝对路径**调用（`audit-runner cpg ...`）。
 
 ## 并发策略（HUNT 多代理并行）
 

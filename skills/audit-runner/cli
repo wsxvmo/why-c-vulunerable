@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# audit-runner — 确定性编排层 CLI（PATH 入口, 无需任何路径解析）
+#
+# 解决了 <skills> 占位符/路径拼写问题: 提示词只需 `audit-runner doctor` 等,
+# 本脚本用 readlink -f 解析自身真实位置, 从任意 cwd 都能跑到 skill 目录。
+#
+# 用法: audit-runner <doctor|cpg|gate|coverage|ledger|resilience> [args...]
+set -uo pipefail
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+DIR="$(dirname "$SELF")"
+CMD="${1:-}"
+if [ -n "$CMD" ]; then shift; fi
+
+case "$CMD" in
+  doctor)     exec python3 "$DIR/doctor.py" "$@" ;;
+  cpg)        exec python3 "$DIR/cpg.py" "$@" ;;
+  gate)       exec python3 "$DIR/gate.py" "$@" ;;
+  coverage)   exec python3 "$DIR/coverage.py" "$@" ;;
+  ledger)     exec python3 "$DIR/ledger.py" "$@" ;;
+  resilience) exec python3 "$DIR/resilience.py" "$@" ;;
+  "")
+    echo "audit-runner — usage: audit-runner <doctor|cpg|gate|coverage|ledger|resilience> ..." >&2
+    exit 2
+    ;;
+  *)
+    echo "audit-runner: 未知子命令 '$CMD'（可用: doctor cpg gate coverage ledger resilience）" >&2
+    exit 2
+    ;;
+esac

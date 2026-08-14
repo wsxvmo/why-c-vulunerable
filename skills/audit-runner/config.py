@@ -195,6 +195,12 @@ def doctor() -> Dict[str, dict]:
     #    回退 joern CPG 图 — 该回退已在 RECON gate 文本中文档化。
     out["codebase-memory"] = _check_codebase_memory()
 
+    # 8. audit-runner CLI 解析检查: `audit-runner` 必须在 PATH 且解析到本 skill。
+    #    教训: 提示词曾写 `python3 <skills>/audit-runner/doctor.py` — <skills>
+    #    占位符不展开 + 路径拼写(why-c-vulunerable 少 lu)让新协调器会话卡死。
+    #    统一走 PATH 命令后, 任何会话只需 `audit-runner doctor`, 无需路径。
+    out["audit-runner-cli"] = _check_audit_runner_cli()
+
     return out
 
 
@@ -294,3 +300,25 @@ if __name__ == "__main__":
     for name, c in doctor().items():
         print(f"[{'OK ' if c['ok'] else 'FAIL'}] {name}: {c['detail']}")
     sys.exit(doctor_exit(doctor()))
+
+
+def _check_audit_runner_cli() -> dict:
+    """第 8 项: `audit-runner` PATH 命令必须解析到本 skill 目录。
+
+    教训: 提示词曾写 `python3 <skills>/audit-runner/doctor.py` — <skills>
+    占位符不展开 + 路径拼写(why-c-vulunerable 的 lu 易漏)让新协调器会话
+    在 RECON 第一步就卡死。统一走 PATH 命令后任意会话只需 `audit-runner
+    doctor`, 无需记忆任何路径。
+    """
+    exe = shutil.which("audit-runner")
+    if not exe:
+        return {"ok": False,
+                "detail": "audit-runner 不在 PATH: 会话将无法调用 doctor/cpg/gate 等",
+                "fix": "ln -sf <skills>/audit-runner/cli ~/.local/bin/audit-runner"}
+    real = os.path.realpath(exe)
+    expected = str(SKILL_ROOT / "cli")
+    if real != expected:
+        return {"ok": False,
+                "detail": f"audit-runner 解析到 {real}, 而非本 skill 的 {expected}",
+                "fix": "删除旧链接后: ln -sf <skills>/audit-runner/cli ~/.local/bin/audit-runner"}
+    return {"ok": True, "detail": f"audit-runner → {real}", "fix": ""}
