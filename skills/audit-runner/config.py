@@ -190,6 +190,11 @@ def doctor() -> Dict[str, dict]:
     #    VALIDATE 排在 GAPFIL 前, 与规范顺序相反且多文件重复声明, 漂移无人察觉）
     out["stage-order"] = _check_stage_order()
 
+    # 7. codebase-memory 功能检查（不只是存在性）: 试索引微型目录。
+    #    RECON 首选 codebase-memory 图枚举入口; 索引不可用(phase=dump 崩溃)时
+    #    回退 joern CPG 图 — 该回退已在 RECON gate 文本中文档化。
+    out["codebase-memory"] = _check_codebase_memory()
+
     return out
 
 
@@ -240,6 +245,43 @@ def _check_stage_order() -> dict:
                 "fix": "修正为规范顺序: RECON → HUNT → GAPFIL → TRACE → VALIDATE → CHAIN → REPORT"}
     return {"ok": True, "detail": f"{checked} 处阶段机声明全部与规范一致",
             "fix": ""}
+
+
+def _check_codebase_memory() -> dict:
+    """第 7 项: codebase-memory 功能检查 — 试索引微型目录判定可用性。
+
+    RECON 首选 codebase-memory 图; 索引不可用(phase=dump 崩溃)时回退
+    joern CPG 图（RECON gate 已文档化该回退）。存在性检测不足以暴露
+    服务/worker 崩溃 — 本项做一次 ~10s 的真实索引试跑。
+    """
+    import subprocess
+    import tempfile
+
+    if not shutil.which("codebase-memory-mcp"):
+        return {"ok": False, "detail": "codebase-memory-mcp 未安装",
+                "fix": "安装或 export PATH; RECON 将回退 joern CPG 图"}
+    with tempfile.TemporaryDirectory(prefix="cbm-check-") as td:
+        (Path(td) / "tiny.c").write_text(
+            "int foo(int x){return x+1;}\nint main(){return foo(1);}\n")
+        try:
+            r = subprocess.run(
+                ["codebase-memory-mcp", "cli", "index_repository",
+                 "--repo-path", td, "--name", "cbm-doctor-probe", "--mode", "fast"],
+                capture_output=True, text=True, timeout=45)
+            raw = r.stdout + r.stderr
+            import re as _re
+            if _re.search(r'"status"\s*:\s*"error"', raw):
+                return {"ok": False,
+                        "detail": "索引功能异常(phase=dump 崩溃): RECON 将回退 joern CPG 图",
+                        "fix": "排查 codebase-memory-mcp 服务/日志; 回退路径已文档化"}
+            return {"ok": True, "detail": "功能正常（微型索引试跑通过）, RECON 可用其图枚举入口",
+                    "fix": ""}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "detail": "索引试跑超时(45s): RECON 将回退 joern CPG 图",
+                    "fix": "排查服务状态"}
+        except Exception as e:  # pragma: no cover
+            return {"ok": False, "detail": f"索引试跑异常({e}): RECON 将回退 joern CPG 图",
+                    "fix": ""}
 
 
 def doctor_exit(checks: Dict[str, dict]) -> int:
