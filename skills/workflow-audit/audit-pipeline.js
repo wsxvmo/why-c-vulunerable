@@ -15,7 +15,8 @@
 //   target     [必填] 目标源码绝对路径
 //   runDir     [可选] 产物目录（agents 写入; 默认 ${skillRoot}/workspace/runs/audit-<名>）
 //   skillRoot  [可选] 本仓库根（默认 /home/xvmo/why-c-vulunerable）
-//   classes    [可选] CWE 类列表（优先级: 调用方指定 > RECON 推荐 > 默认 2 类; 按语言剪枝）
+//   classes    [可选] CWE 类列表（默认并入 RECON 推荐; classesMode=pin 时覆盖）
+//   classesMode [可选] "merge"(默认): 调用方 classes 并入 RECON 推荐; "pin": 仅用调用方 classes
 //
 // 设计要点（详见 workflow/TASK-SUMMARY.md 与 skills/workflow-audit/SKILL.md）:
 //   * 脚本无 fs/网络——所有文件工作由子 agent 完成, 阶段间只传内存 JSON
@@ -209,12 +210,21 @@ if (!recon || !Array.isArray(recon.entry_points) || !recon.cpg_path) {
 }
 log(`RECON 完成: ${recon.languages.join("/")}, ${recon.entry_points.length} 个入口点, CPG=${recon.cpg_path}, 推荐 ${(recon.recommended_classes || []).length} 类`);
 
-// A+B 类选择: 调用方指定 > RECON 推荐 > 默认; 再按语言剪枝（防白跑）
-const requested = callerClasses || recon.recommended_classes || DEFAULT_CLASSES;
+// A+B 类选择（RECON 为主要方向）:
+//   - 默认 merge: effective = RECON 推荐 ∪ 调用方 classes —— RECON 的判断永不丢弃, 调用方只追加
+//   - 显式 pin:   args.classesMode === "pin" 时 effective = 仅调用方 classes（人工定范围, 如冒烟/已知目标）
+//   - 兜底:       两者皆缺 → DEFAULT_CLASSES; 随后一律按语言剪枝（防白跑）
+const reconRec = (recon.recommended_classes || []).filter(Boolean);
+const caller = (callerClasses || []).filter(Boolean);
+const classesMode = args.classesMode === "pin" ? "pin" : "merge";
+const requested = classesMode === "pin"
+  ? caller
+  : [...new Set([...reconRec, ...caller])];
+if (requested.length === 0) requested.push(...DEFAULT_CLASSES);
 const prunedList = pruneByLanguage(requested, recon.languages);
 const effectiveClasses = prunedList.length > 0 ? prunedList : ["command-injection", "race-condition"];
 const prunedClasses = requested.filter((c) => !prunedList.includes(c));
-log(`HUNT 类选择: ${effectiveClasses.join(", ")}${prunedClasses.length ? `（剪掉: ${prunedClasses.join(", ")}）` : ""}`);
+log(`HUNT 类选择[${classesMode}]: ${effectiveClasses.join(", ")}${prunedClasses.length ? `（剪掉: ${prunedClasses.join(", ")}）` : ""}`);
 
 // ============================================================================
 // Phase 2: HUNT — 每 CWE 类 1 个 agent, parallel 并发 ≤6
@@ -333,10 +343,11 @@ return {
   runDir,
   findings: valid,
   coverage,
-  // 类选择元数据: 请求/推荐/实际执行/剪枝 — 防止"只跑了子集却像全覆盖"的静默漏检
+  // 类选择元数据: RECON 推荐为主要方向; 调用方 classes 默认并入(merge), classesMode=pin 时覆盖
   classes: {
+    mode: classesMode,
     requested: requested,
-    recommended: recon.recommended_classes || [],
+    recommended: reconRec,
     effective: effectiveClasses,
     pruned: prunedClasses,
   },

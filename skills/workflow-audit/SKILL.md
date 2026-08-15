@@ -68,7 +68,7 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | `target` | ✅ | 目标源码绝对路径 |
 | `runDir` | 可选 | 子 agent 写产物的目录；默认 `${skillRoot}/workspace/runs/audit-<名>` |
 | `skillRoot` | 可选 | 本仓库根；默认 `/home/xvmo/why-c-vulunerable` |
-| `classes` | 可选 | 段1：CWE 类列表。**优先级：调用方指定 > RECON 模型推荐 > 默认 2 类**，最终按语言剪枝（无 python 剔 eval-injection 等）。不传时由 RECON 按目标类型推荐全量有效类 |
+| `classes` | 可选 | 段1：CWE 类列表。**默认并入 RECON 推荐（RECON 为主要方向）**；传 `classesMode:"pin"` 时仅用此清单 |
 | `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn） |
 | `cpg_path` | 段2 必填 | 段1 recon 构建的 CPG 路径 |
 | `confirmed` | 段3 必填 | 段2 返回的 `confirmed[]` |
@@ -96,11 +96,12 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | HUNT | parallel, 每 CWE 类 1 个 | ≤6 并发 | 每类 `{cls, findings[], checked[], unchecked[], notes?}` + `runDir/hunt/<cls>/` |
 | GAPFIL | 最小循环（对 INCOMPLETE 类补查 1 轮） | ≤6 并发 | 同上（替换原结果） |
 
-### 类选择机制（A+B）
+### 类选择机制（A+B — RECON 为主要方向）
 
-1. **优先级**：`args.classes`（调用方）> RECON 的 `recommended_classes`（模型按语言/目标类型/权限上下文推荐，至少 3 个）> 默认 `["buffer-overflow","command-injection"]`。
-2. **语言剪枝（确定性兜底）**：RECON 完成后脚本按 `recon.languages` 剪掉不适用类——无 python 剔 `eval-injection`/`unsafe-deserialization`，无 shell 剔 `shell-injection`，非 C/C++ 剔内存安全 8 类；剪光则落 `["command-injection","race-condition"]`。
-3. **防静默漏检**：返回 `classes: {requested, recommended, effective, pruned}` ——调用方能看见跑了哪些类、剪了哪些类、为什么。coverage 只覆盖 effective 类，不等于全类审计。
+1. **RECON 是主要方向**：`recommended_classes`（必填，RECON 模型按语言/目标类型/权限上下文推荐 ≥3 类）永远是猎杀清单的基础。**调用方的 `classes` 默认只是并入（并集追加），不会顶掉 RECON 的判断**——因为调用方往往不如看过源码的 RECON 了解目标。
+2. **人工 pin 覆盖**：传 `classesMode: "pin"` 时，猎杀清单 = 仅调用方 `classes`（冒烟压成本/已知目标定范围/人为指定重点）。
+3. **语言剪枝（确定性兜底）**：无论 merge/pin，最终按 `recon.languages` 剪掉不适用类——无 python 剔 `eval-injection`/`unsafe-deserialization`，无 shell 剔 `shell-injection`，非 C/C++ 剔内存安全 8 类；剪光则落 `["command-injection","race-condition"]`。
+4. **防静默漏检**：返回 `classes: {mode, requested, recommended, effective, pruned}`——调用方能看见"RECON 推荐了哪些、调用方加了哪些、实际跑了哪些、剪了哪些"。coverage 只覆盖 effective 类，不等于全类审计。
 
 **finding 必填字段**（与 `schemas/stage-finding.json` 对齐）：`vuln_class, file, line(整数), sink, entry_point, confidence(low|medium|high), evidence(entry→sink)`。
 
