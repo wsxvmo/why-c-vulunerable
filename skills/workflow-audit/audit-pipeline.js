@@ -204,11 +204,13 @@ phase("gapfill");
 let results = huntResults.filter(Boolean);
 const gapfillRounds = 1;
 let roundsDone = 0;
+let gapfillAgents = 0;
 
 const incompleteFirst = results.filter((r) => r.unchecked && r.unchecked.length > 0);
 if (incompleteFirst.length > 0 && roundsDone < gapfillRounds) {
   roundsDone++;
-  log(`GAPFIL 第 1 轮: ${incompleteFirst.map((r) => r.cls).join(", ")}`);
+  gapfillAgents += incompleteFirst.length;   // 按实际派发的补查 agent 数计, 不是轮数
+  log(`GAPFIL 第 1 轮: ${incompleteFirst.map((r) => r.cls).join(", ")} (${gapfillAgents} 个 agent)`);
   const gap = await parallel(incompleteFirst.map((r) => () =>
     agent(`你是 c-auditor（GAPFIL 补查 ${r.cls}, 代码审计流水线段1）。
 
@@ -290,7 +292,7 @@ return {
   agents: {
     recon: 1,
     hunt: huntResults.length,
-    gapfill: roundsDone,
-    started: 1 + huntResults.length + roundsDone,
+    gapfill: gapfillAgents,
+    started: 1 + huntResults.length + gapfillAgents,
   },
 };
