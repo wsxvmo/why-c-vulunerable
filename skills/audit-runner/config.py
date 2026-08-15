@@ -259,28 +259,49 @@ def _check_codebase_memory() -> dict:
     RECON 首选 codebase-memory 图; 索引不可用(phase=dump 崩溃)时回退
     joern CPG 图（RECON gate 已文档化该回退）。存在性检测不足以暴露
     服务/worker 崩溃 — 本项做一次 ~10s 的真实索引试跑。
+
+    教训(2025-08 实测): 固定探测名 `cbm-doctor-probe` 会命中旧索引缓存 —
+    索引能力已损坏(典型: 沙箱 workspace-write 下 ~/.cache 只读, dump 阶段
+    写 db 失败)时, 固定名仍命中旧 .db 返回 status=indexed, doctor 假阳性
+    通过, RECON 误以为图可用。修复: 每次用带时间戳的唯一探测名强制真索引,
+    并校验返回 JSON 的 status==indexed 且 nodes>0; 失败时给出缓存权限排查提示。
     """
+    import json
     import subprocess
     import tempfile
+    import time
 
     if not shutil.which("codebase-memory-mcp"):
         return {"ok": False, "detail": "codebase-memory-mcp 未安装",
                 "fix": "安装或 export PATH; RECON 将回退 joern CPG 图"}
+    probe_name = f"cbm-doctor-probe-{int(time.time())}-{os.getpid()}"
     with tempfile.TemporaryDirectory(prefix="cbm-check-") as td:
         (Path(td) / "tiny.c").write_text(
             "int foo(int x){return x+1;}\nint main(){return foo(1);}\n")
         try:
             r = subprocess.run(
                 ["codebase-memory-mcp", "cli", "index_repository",
-                 "--repo-path", td, "--name", "cbm-doctor-probe", "--mode", "fast"],
+                 "--repo-path", td, "--name", probe_name, "--mode", "fast"],
                 capture_output=True, text=True, timeout=45)
-            raw = r.stdout + r.stderr
-            import re as _re
-            if _re.search(r'"status"\s*:\s*"error"', raw):
+            # stdout 为纯净 JSON（stderr 是日志, 不参与解析）
+            status, nodes, ok = "unknown", 0, False
+            try:
+                obj = json.loads(r.stdout)
+                status = obj.get("status", "unknown")
+                nodes = int(obj.get("nodes") or 0)
+                ok = status == "indexed" and nodes > 0
+            except (json.JSONDecodeError, TypeError, ValueError):
+                ok = False  # 无法解析视为失败, 不放过
+            if not ok:
                 return {"ok": False,
-                        "detail": "索引功能异常(phase=dump 崩溃): RECON 将回退 joern CPG 图",
-                        "fix": "排查 codebase-memory-mcp 服务/日志; 回退路径已文档化"}
-            return {"ok": True, "detail": "功能正常（微型索引试跑通过）, RECON 可用其图枚举入口",
+                        "detail": f"索引功能异常(status={status}, nodes={nodes}, "
+                                  f"可能 phase=dump 崩溃): RECON 将回退 joern CPG 图",
+                        "fix": "排查 codebase-memory-mcp 服务/日志; 若在沙箱内先确认 "
+                               "~/.cache/codebase-memory-mcp 可写（只读会导致 dump 崩溃, "
+                               "可用 audit-tools doctor 复核）; 回退路径已文档化"}
+            return {"ok": True,
+                    "detail": f"功能正常（微型索引试跑通过, nodes={nodes}）, "
+                              f"RECON 可用其图枚举入口",
                     "fix": ""}
         except subprocess.TimeoutExpired:
             return {"ok": False, "detail": "索引试跑超时(45s): RECON 将回退 joern CPG 图",
