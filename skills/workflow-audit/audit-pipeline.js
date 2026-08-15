@@ -127,6 +127,11 @@ const RECON_SCHEMA = {
       items: { type: "string", enum: [...Object.keys(CLASS_SECTIONS), "business-logic"] },
       description: "RECON 基于语言/目标类型/权限上下文推荐的猎杀类清单",
     },
+    exclude_files: {
+      type: "array",
+      items: { type: "string" },
+      description: "目标树内发现的非源码产物/基准文件清单（report/poc/disconf/START-HERE/审计输出等）, HUNT 将显式禁用",
+    },
   },
 };
 
@@ -183,18 +188,22 @@ ${discipline}
    否则 audit-runner cpg query --cpg <cpg> --file ${QUERIES}/entry.sc;
    对每个候选, 用 read/grep 确认语义（main/回调/信号/dbus 注册/导出表/exec 入口）, 记录最终入口点列表;
 4. 记录语言分布（c/cpp/shell/python）与权限上下文（是否 setuid/root 守护进程）。
-5. 把 recon.json（上述字段）写到 ${runDir}/recon/recon.json。
+5. 污染源排查（防"带提示的验证"）: 遍历目标树, 识别**非源码的基准/验收/审计产物**文件
+   （START-HERE*、*REPORT*.md、VULN-FINDINGS*、THREAT_MODEL*、CALL-CHAINS*、poc_*/disconf_*、
+   *exploit*、*.rpm/*.cpio/*.tar.gz、.pi/、workspace/、*.cpg 等）, 全部列入 exclude_files;
+   **这些文件不得作为审计依据, 不得影响任何结论**; 若发现疑似基准文件, 在 assumptions 里如实标注。
 6. 推荐猎杀类清单 recommended_classes（B）: 基于语言分布/目标类型（守护进程? 库? CLI? setuid? DBus 服务?）/
    权限上下文, 从枚举里选**该目标实际适用**的类, 至少 3 个;
    - 无 python → 不推 eval-injection/unsafe-deserialization; 无 shell → 不推 shell-injection;
    - 纯 C/C++ 目标 → 推内存安全类为主; 库目标 → 考虑 access-control/权限类（导出 API 面）;
    - root 守护进程/DBus 服务 → 推 race-condition/toctou/access-control;
    - 在 assumptions 里写明推荐依据（一句话/类）。
+7. 把 recon.json（上述字段）写到 ${runDir}/recon/recon.json。
 
 返回 JSON（严格按契约）:
 {languages: string[], entry_points: string[], cpg_path: string,
  toolchain: {doctor: string, joern: string, ...}, assumptions: string[],
- recommended_classes: string[]}`,
+ recommended_classes: string[], exclude_files: string[]}`,
   { label: "recon", phase: "recon", schema: RECON_SCHEMA });
 
 if (!recon || !Array.isArray(recon.entry_points) || !recon.cpg_path) {
@@ -226,6 +235,11 @@ const effectiveClasses = prunedList.length > 0 ? prunedList : ["command-injectio
 const prunedClasses = requested.filter((c) => !prunedList.includes(c));
 log(`HUNT 类选择[${classesMode}]: ${effectiveClasses.join(", ")}${prunedClasses.length ? `（剪掉: ${prunedClasses.join(", ")}）` : ""}`);
 
+// 污染控制: RECON 标注的非源码产物文件 → HUNT/GAPFIL 提示词显式禁用
+const exclusionBlock = (recon.exclude_files && recon.exclude_files.length)
+  ? `\n## 污染控制（防基准泄漏）\n以下文件是目标树内的非源码产物/基准文件, **不得读取、不得引用、不得作为审计依据**:\n${recon.exclude_files.map((f) => `- ${f}`).join("\n")}\n违反即审计无效。`
+  : "";
+
 // ============================================================================
 // Phase 2: HUNT — 每 CWE 类 1 个 agent, parallel 并发 ≤6
 // ============================================================================
@@ -243,6 +257,7 @@ CPG: ${recon.cpg_path}
 产物目录: ${runDir}/hunt/${cls}/ （先 mkdir -p）
 
 ${discipline}
+${exclusionBlock}
 
 本任务（自限: 最多查 3 个入口点）:
 1. 引擎（必跑, 经封装）:
@@ -284,6 +299,7 @@ CPG: ${recon.cpg_path}
 产物目录: ${runDir}/hunt/${r.cls}/ （追加写入）
 
 ${discipline}
+${exclusionBlock}
 
 上一轮覆盖情况:
 - 已检查（勿重复）: ${JSON.stringify(r.checked || [])}

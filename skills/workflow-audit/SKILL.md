@@ -126,6 +126,13 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 
 audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`。
 
+## 污染控制（盲测完整性）
+
+1. **验收基准（oracle）必须放在被测目标树之外**（同级目录或单独验收目录）。基准放回目标树内 = "带提示的验证"（hinted verification），审计独立性作废。
+2. **RECON 识别污染源**：`exclude_files` 字段列出目标树内所有非源码产物/基准文件（START-HERE*、*REPORT*.md、VULN-FINDINGS*、poc_*/disconf_*、*.rpm/*.cpio、.pi/、workspace/、*.cpg 等），并在 assumptions 如实标注。
+3. **HUNT/GAPFIL 显式禁用**：RECON 的 `exclude_files` 注入每个 auditor 提示词（"不得读取、不得引用、不得作为审计依据"），从结构上关闭 HUNT skim 基准文件的通道。
+4. **如实记录**：审计报告标注本次是 blind 还是 hinted（若 RECON 发现基准文件残留）。
+
 ## 验收标准（对齐 workflow/TASK-SUMMARY.md）
 
 - [x] `skills/workflow-audit/` 存在，SKILL.md 可读
