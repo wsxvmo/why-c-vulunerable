@@ -63,6 +63,15 @@ const CLASS_SECTIONS = {
   "access-control": "§3.1 access-control (CWE-284/862/863)",
   "privilege-mgmt": "§3.2 privilege-mgmt (CWE-250/269/271/272/273)",
   "permission-assignment": "§3.3 permission-assignment (CWE-732/276)",
+  "spoofable-identity": "§3.1a spoofable-identity (CWE-287/269) — 身份信任边界, 命中即升优先级",
+  "shell-injection": "§5.1 shell-injection (CWE-78)",
+  "eval-injection": "§6.1 eval-injection (CWE-95/94)",
+  "unsafe-deserialization": "§6.2 unsafe-deserialization (CWE-502)",
+  "toctou": "§2.5 race-condition / toctou (CWE-362/367) — 独立键, 与 race-condition 共享方法论",
+  "memory-leak": "§7.1 resource-leak / memory-leak (CWE-401/404/775)",
+  "resource-leak": "§7.1 resource-leak / memory-leak (CWE-401/404/775)",
+  "crypto-weakness": "§7.2 crypto-weakness (CWE-327/328)",
+  "info-disclosure": "§7.3 info-disclosure (CWE-200)",
 };
 
 const discipline = `## 铁律（不可违反）

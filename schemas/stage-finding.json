@@ -33,6 +33,8 @@
         "permission-assignment",
         "crypto-weakness",
         "info-disclosure",
+        "business-logic",
+        "spoofable-identity",
         "other"
       ]
     },

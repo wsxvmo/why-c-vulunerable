@@ -68,7 +68,7 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | `target` | ✅ | 目标源码绝对路径 |
 | `runDir` | 可选 | 子 agent 写产物的目录；默认 `${skillRoot}/workspace/runs/audit-<名>` |
 | `skillRoot` | 可选 | 本仓库根；默认 `/home/xvmo/why-c-vulunerable` |
-| `classes` | 可选 | 段1：CWE 类列表；默认 `["buffer-overflow","command-injection"]`，跑通后按 code-audit 章节扩展 |
+| `classes` | 可选 | 段1：CWE 类列表；默认 `["buffer-overflow","command-injection"]`。完整覆盖建议传全部类（见下） |
 | `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn） |
 | `cpg_path` | 段2 必填 | 段1 recon 构建的 CPG 路径 |
 | `confirmed` | 段3 必填 | 段2 返回的 `confirmed[]` |
@@ -133,11 +133,12 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 ## 状态
 
 - **v1（完成）**：段1（RECON→HUNT→GAPFIL）已实现并冒烟通过（ksaf-dynamic-uid，3 agent，token 对比记录在 `workspace/runs/ksaf-dynamic-uid-smoke/token-comparison.md`）。
-- **v2（完成）**：段2（TRACE+VALIDATE，KILL 税前置 + 否证优先 + 条件门禁）+ 段3（CHAIN+REPORT，CVSS 富化）+ model 分层（trace/validate=pro, hunt/chain/report=flash）。端到端验证（ksaf-init 纯净源码）见 `workspace/runs/ksaf-init-clean-2025-08-15/E2E-SUMMARY.md`。
+- **v2（完成）**：段2（TRACE+VALIDATE，KILL 税前置 + 否证优先 + 条件门禁）+ 段3（CHAIN+REPORT，CVSS 富化）+ model 分层（trace/validate=pro, hunt/chain/report=flash）。端到端验证（ksaf-init 纯净源码）见 `workspace/runs/ksaf-init-clean-2025-08-15/E2E-SUMMARY.md`。独立会话在 libsecurity1 上复现历史漏洞（CWE-78 注入 + CWE-476 NULL 解引用，均真实 repro 确认）。
+- **类空间（已补全 25 键）**：`CLASS_SECTIONS` 覆盖 schema 枚举全部类（除 other）——内存安全 8 + 注入/路径 5（含 shell-injection）+ 权限 4（含 spoofable-identity）+ Python 2（eval-injection/unsafe-deserialization）+ 交叉 5（toctou/race-condition/memory-leak/resource-leak/crypto-weakness/info-disclosure）。完整审计传 `classes: [全部键]`。
 - **待办**：
-  1. VALIDATE sanitizer 分支补验（用已知漏洞 fixture 触发一次 confirmed 路径）
+  1. VALIDATE sanitizer 分支已在 libsecurity1 验证（F1/F2/F3 均 sanitizer/repro 确认）✅
   2. casefile/ledger 对接（ledger add/log 确定性 CLI 由 agent 调用）
-  3. 扩展 CWE 类（`classes` 参数按 code-audit 章节逐类加）
+  3. RECON 对库目标把导出 API 注册为入口点（§6c C ABI Export Surface——libsecurity1 F4 KILL-1 教训）
 
 ## 相关路径
 
