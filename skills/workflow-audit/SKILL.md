@@ -18,15 +18,26 @@ description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH
 ## 三段式（每段 = 一次 workflow 调用）
 
 ```
-段1 workflow: RECON → HUNT → GAPFIL          ← audit-pipeline.js（已实现 v1）
+段1 workflow: RECON → HUNT → GAPFIL          ← audit-pipeline.js（v1 已实现）
      ↓ return {findings[], coverage}          ← 主 agent 过目/干预点
-段2 workflow: TRACE → VALIDATE               ← v2 待实现（每 finding 独立 agent）
+段2 workflow: TRACE → VALIDATE               ← trace-validate.js（v2 已实现）
      ↓ return {confirmed[], killed[]}
-段3 workflow: CHAIN → REPORT                 ← v2 待实现
+段3 workflow: CHAIN → REPORT                 ← chain-report.js（v2 已实现）
      ↓ return {report}                       ← 最终交付
 ```
 
 > 合并而非一阶段一段的原因：脚本内 JS 变量传递阶段产物 = 0 token；拆成独立调用则每段数据要穿过主 agent 中转，确定性编排税重新出现。分三段保留 3 个可中断/可续跑/可人工干预的检查点。
+
+## Model 分层（deliberate disagreement）
+
+workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain subagent 做不到）。默认分层（可经 `args.models` 覆盖，见下）：
+
+| 阶段 | 默认模型 | 理由 |
+|---|---|---|
+| HUNT | deepseek-v4-flash | 标准模型，广撒网 |
+| TRACE | deepseek-v4-pro | 更强模型做逐跳验证 |
+| VALIDATE | deepseek-v4-pro | 与 HUNT 不同，避免共享盲点 |
+| CHAIN/REPORT | deepseek-v4-flash | 轻量分析 |
 
 ## 调用方式（段1）
 
@@ -57,7 +68,23 @@ description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH
 | `target` | ✅ | 目标源码绝对路径 |
 | `runDir` | 可选 | 子 agent 写产物的目录；默认 `${skillRoot}/workspace/runs/audit-<名>` |
 | `skillRoot` | 可选 | 本仓库根；默认 `/home/xvmo/why-c-vulunerable` |
-| `classes` | 可选 | CWE 类列表；默认 `["buffer-overflow","command-injection"]`，跑通后按 code-audit 章节扩展 |
+| `classes` | 可选 | 段1：CWE 类列表；默认 `["buffer-overflow","command-injection"]`，跑通后按 code-audit 章节扩展 |
+| `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn） |
+| `cpg_path` | 段2 必填 | 段1 recon 构建的 CPG 路径 |
+| `confirmed` | 段3 必填 | 段2 返回的 `confirmed[]` |
+| `coverage` | 段3 可选 | 段1 返回的 `coverage[]`，补进报告 |
+| `models` | 可选 | `{hunt?, trace?, validate?, chain?, report?}` 模型覆盖 |
+
+### 段2/段3 追加契约
+
+| 阶段 | 形态 | agent 数 | 输出 |
+|---|---|---|---|
+| TRACE | parallel, 每 finding 1 个（KILL 税前置内置） | ≤6 并发 | 每 finding `{finding_id, trace_result: REACHABLE\|UNREACHABLE\|KILLED, entry_point, call_chain[], data_flow, defenses_checked[], attacker_model, impact_if_reachable?, unreachable_reason?, kill_reason?}` |
+| VALIDATE | parallel, 每 REACHABLE finding 1 个（否证优先 + sanitizer） | ≤6 并发 | 每 finding `{finding_id, status: confirmed\|killed, technique_used, detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?, kill_reason?}` |
+| CHAIN | 1 个 agent（仅 confirmed>0 时） | 1 | `{chains[], summary}` |
+| REPORT | confirmed>0 时 1 个 report agent 补 CVSS；否则纯脚本聚合 | 0-1 | `{findings[], summary}` |
+
+**脚本内条件门禁**（段2）：confirmed → poc_path/run_log/evidence_extracted 必填；killed → kill_reason 必填；不合格 repair ≤2 次重派。
 
 ## 段1 阶段契约
 
@@ -101,9 +128,9 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 
 ## 状态
 
-- **v1（当前）**：段1 已实现（RECON→HUNT→GAPFIL 骨架，默认 2 类）。
-- **v2（待办）**：段2（TRACE+VALIDATE，每 finding 独立 agent，否证优先 + 条件门禁）+ 段3（CHAIN+REPORT）+ model 分层（hunt=standard / validate=strong, deliberate disagreement）+ casefile/ledger 对接（确定性 CLI 由 agent 调用）。
-- 扩展 CWE 类：段1 的 `classes` 参数按 code-audit 技能章节逐类加，跑通一类加一类。
+- **v1（完成）**：段1（RECON→HUNT→GAPFIL）已实现并冒烟通过（ksaf-dynamic-uid，3 agent，token 对比记录在 `workspace/runs/ksaf-dynamic-uid-smoke/token-comparison.md`）。
+- **v2（已实现）**：段2（TRACE+VALIDATE，KILL 税前置 + 否证优先 + 条件门禁）+ 段3（CHAIN+REPORT，CVSS 富化）+ model 分层（trace/validate=pro, hunt/chain/report=flash）。端到端验证见 `workspace/runs/ksaf-init-.../`。
+- **待办**：casefile/ledger 对接（确定性 CLI 由 agent 调用）；扩展 CWE 类（`classes` 参数按 code-audit 章节逐类加）；README 增补。
 
 ## 相关路径
 
