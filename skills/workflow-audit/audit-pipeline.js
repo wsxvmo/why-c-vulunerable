@@ -372,14 +372,33 @@ const coverage = results.map((r) => {
   };
 });
 
-log(`段1完成: ${valid.length} 个有效 finding, ${invalid.length} 个未过门禁, 覆盖: ${coverage.map((c) => `${c.cls}=${c.status}`).join(", ")}`);
+// C: 跨类同根因去重 — 同一 file+sink(行距≤10) 视为同一根因（如 ksaf-init 同根因双视角）,
+// 保留证据最全/置信度最高者, 记录合并来源, 防段2/段3 重复 trace/validate
+const DEDUP_WINDOW = 10;
+const dedupedFindings = [];
+for (const f of valid) {
+  const dup = dedupedFindings.find((d) => d.file === f.file && d.sink === f.sink && Math.abs(d.line - f.line) <= DEDUP_WINDOW);
+  if (!dup) {
+    dedupedFindings.push({ ...f, cls_all: [f.cls] });
+  } else {
+    dup.cls_all = [...new Set([...dup.cls_all, f.cls])];
+    dup.merged_from = [...new Set([...(dup.merged_from || []), f.vuln_class])];
+    if ((f.evidence || "").length > (dup.evidence || "").length) dup.evidence = f.evidence;
+    if (f.confidence === "high") dup.confidence = "high";
+    if (f.attacker_model && !dup.attacker_model) dup.attacker_model = f.attacker_model;
+  }
+}
+const mergedCount = valid.length - dedupedFindings.length;
+if (mergedCount > 0) log(`去重: ${valid.length} → ${dedupedFindings.length}（合并 ${mergedCount} 个同根因）`);
+
+log(`段1完成: ${dedupedFindings.length} 个有效 finding（${mergedCount} 个同根因合并）, ${invalid.length} 个未过门禁, 覆盖: ${coverage.map((c) => `${c.cls}=${c.status}`).join(", ")}`);
 
 return {
   pipeline: "code-audit-segment1",
   status: "complete",
   target,
   runDir,
-  findings: valid,
+  findings: dedupedFindings,
   coverage,
   // 类选择元数据: RECON 推荐为主要方向; 调用方 classes 默认并入(merge), classesMode=pin 时覆盖
   classes: {

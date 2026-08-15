@@ -202,12 +202,69 @@ const report = {
   generated_at: new Date().toISOString(),
 };
 
-log(`段3完成: chains=${chainResult.chains.length}, report findings=${reportFindings.length}`);
+// ============================================================================
+// Phase 3: LEDGER（B 收尾落账）— 1 个 agent 把最终结果一次性写入 casefile 台账
+//   不做全程状态机: 编号在收尾时一次性分配, 无跨段接力链
+// ============================================================================
+phase("ledger");
+
+const CASEFILE_PY = "/home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py";
+const LEDGER_SCHEMA = {
+  type: "object",
+  required: ["casefile_initialized", "report_path", "case_ids"],
+  properties: {
+    casefile_initialized: { type: "boolean" },
+    report_path: { type: "string" },
+    case_ids: { type: "array", items: { type: "string" } },
+    notes: { type: "string" },
+  },
+};
+
+const ledgerEntries = reportFindings.map((f) => ({
+  id: f.id,
+  title: `${f.vuln_class} @ ${f.file}:${f.line ?? ""}`.slice(0, 120),
+  bug_class: f.vuln_class,
+  file: f.file,
+  line: f.line,
+  severity: f.severity || "medium",
+  evidence: (f.summary || f.cwe_id || f.cvss_vector || "").slice(0, 200),
+  poc: f.poc_path || "",
+}));
+
+const ledger = await agent(`你是 ledger 收尾员（代码审计流水线段3, 一次性落账）。
+
+把最终审计结果写入 casefile 台账（${runDir}）。casefile.py 路径: ${CASEFILE_PY}
+（若不存在, 报告即可; 不阻塞流水线。）
+
+目标: ${target}
+confirmed findings: ${JSON.stringify(ledgerEntries, null, 2)}
+coverage: ${JSON.stringify(coverage, null, 2)}
+链: ${JSON.stringify(chainResult.chains, null, 2)}
+
+步骤（全部用绝对路径 python3 调用, 失败就跳过继续, 不阻塞）:
+1. init（幂等, 已存在则跳过）: python3 ${CASEFILE_PY} init ${runDir} --title "Pipeline: ${target}" --target "${target}"
+2. 每个 confirmed finding add 一条案件:
+   python3 ${CASEFILE_PY} add ${runDir} --title "<title>" --status confirmed --bug-class "<vuln_class>" \\
+     --target "${target}" --evidence "<evidence 一行>" --field file=<file> --field line=<line> --field severity=<severity>
+   （推荐用包装器自动去重: audit-runner ledger --run-dir ${runDir} --op add --title ... --bug-class ... --dedup-key <file>:<line>:<vuln_class>, 它会打印 case id）;
+   记录每个 case id。
+3. 每 case 追加证据日志:
+   python3 ${CASEFILE_PY} log ${runDir} <case_id> --stage REPORT --verdict confirmed --evidence "<一句话证据>" [--artifact <poc 路径>]
+4. 0 confirmed 时: 也 init + log 一条 summary 记录（case_id 用 "RUN", --stage REPORT --verdict done --evidence "no confirmed findings; coverage: <各 cls=status>"）
+5. 生成可读报告: python3 ${CASEFILE_PY} report ${runDir} --out ${runDir}/report/casefile-report.md
+
+返回 JSON（严格按契约）:
+{casefile_initialized: bool, report_path: string(不存在则空串), case_ids: string[],
+ notes?: string}`,
+  { label: "ledger", phase: "ledger", schema: LEDGER_SCHEMA, model: MODELS.report });
+
+log(`段3完成: chains=${chainResult.chains.length}, report findings=${reportFindings.length}, ledger=${ledger ? "ok" : "skipped"}`);
 
 return {
   pipeline: "code-audit-segment3",
   status: "complete",
   target,
   report,
-  agents: { chain: confirmed.length > 0 ? 1 : 0, report: confirmed.length > 0 ? 1 : 0 },
+  ledger: ledger || { casefile_initialized: false, report_path: "", case_ids: [], notes: "ledger agent 失败, 台账未写" },
+  agents: { chain: confirmed.length > 0 ? 1 : 0, report: confirmed.length > 0 ? 1 : 0, ledger: ledger ? 1 : 0 },
 };

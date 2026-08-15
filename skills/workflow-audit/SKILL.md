@@ -22,8 +22,8 @@ description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH
      ↓ return {findings[], coverage}          ← 主 agent 过目/干预点
 段2 workflow: TRACE → VALIDATE               ← trace-validate.js（v2 已实现）
      ↓ return {confirmed[], killed[]}
-段3 workflow: CHAIN → REPORT                 ← chain-report.js（v2 已实现）
-     ↓ return {report}                       ← 最终交付
+段3 workflow: CHAIN → REPORT → LEDGER        ← chain-report.js（v2 已实现）
+     ↓ return {report, ledger}               ← 最终交付 + casefile 台账
 ```
 
 > 合并而非一阶段一段的原因：脚本内 JS 变量传递阶段产物 = 0 token；拆成独立调用则每段数据要穿过主 agent 中转，确定性编排税重新出现。分三段保留 3 个可中断/可续跑/可人工干预的检查点。
@@ -88,6 +88,10 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 **脚本内条件门禁**（段2）：confirmed → poc_path/run_log/evidence_extracted 必填；killed → kill_reason 必填；不合格 repair ≤2 次重派。
 
 **段2 返回契约**：`confirmed[]`（每项含完整 finding+trace+validation）、`killed[]`（VALIDATE 级 kill）、`killed_by_gate[]`（TRACE 级 KILL 税拦截，含完整 trace 对象）、`gate`、`stats`、`agents`。finding 与 trace 按序绑定（pair），finding_id 偏差有 positional 兜底，不会丢 finding 字段。
+
+**段1 去重（C）**：同一 `file+sink`（行距 ≤10）的跨类同根因 finding 合并为一条（保留证据最全/置信度最高者，`cls_all` 记录全部来源类），防段2 重复 trace/validate。
+
+**段3 LEDGER（B 收尾落账）**：末尾 1 个 agent 把最终 confirmed+coverage 一次性写入 casefile 台账（`runDir` 下：init → add 每 case（`audit-runner ledger --op add --dedup-key` 自动去重）→ log 证据 → `casefile.py report --out runDir/report/casefile-report.md`）。不做全程状态机——编号收尾一次性分配，无跨段接力链。返回 `ledger: {casefile_initialized, report_path, case_ids}`。casefile 的"状态机约束 agent"职责在无主 agent 模型下已由脚本门禁接管（见上），台账保留"记录+索引+人工时间线"价值。
 
 ## 段1 阶段契约
 
@@ -154,6 +158,19 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 - [x] **三段式端到端**：ksaf-init 纯净源码 段1(2 假设) → 段2(双 UNREACHABLE, pro 否证 hunter 粘滞位误读) → 段3(干净报告)，见 `workspace/runs/ksaf-init-clean-2025-08-15/E2E-SUMMARY.md`
 - [ ] **VALIDATE sanitizer 分支**：代码完整但无 finding 到达（本轮全被 TRACE 否掉）— 需已知漏洞 fixture 补验
 - [ ] **casefile/ledger 对接**：确定性 CLI（ledger add/log）由 agent 调用，待接入
+
+## 查看台账索引（vuln-hunter 模式下三种方式）
+
+跑完段3 后，台账落在 `<runDir>/`（`casefile.py report` 产物在 `<runDir>/report/casefile-report.md`）。vuln-hunter 模式下查看：
+
+1. **直接问 agent（最方便）**：在 DSH 会话里说"查看 `<runDir>` 的案件台账"或"运行 casefile report"——vuln-hunter preset 人设已内置 casefile 用法，agent 会执行 `casefile.py list/logview/report` 并把结果回给你。
+2. **自己开终端跑 CLI**：
+   ```bash
+   python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py list <runDir>
+   python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py logview <runDir> <case-id>
+   python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py report <runDir>   # 或 --out 输出到文件
+   ```
+3. **直接打开报告文件**：`<runDir>/report/casefile-report.md`（含 findings 表 + 证据时间线），可在 GUI 里 read 或任意编辑器打开。
 
 ## 状态
 
