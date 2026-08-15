@@ -15,7 +15,7 @@
 //   target     [必填] 目标源码绝对路径
 //   runDir     [可选] 产物目录（agents 写入; 默认 ${skillRoot}/workspace/runs/audit-<名>）
 //   skillRoot  [可选] 本仓库根（默认 /home/xvmo/why-c-vulunerable）
-//   classes    [可选] CWE 类列表（默认 ["buffer-overflow","command-injection"]）
+//   classes    [可选] CWE 类列表（优先级: 调用方指定 > RECON 推荐 > 默认 2 类; 按语言剪枝）
 //
 // 设计要点（详见 workflow/TASK-SUMMARY.md 与 skills/workflow-audit/SKILL.md）:
 //   * 脚本无 fs/网络——所有文件工作由子 agent 完成, 阶段间只传内存 JSON
@@ -40,10 +40,35 @@ const runDir = args.runDir || (() => {
   return `${SKILL_ROOT}/workspace/runs/audit-${base}`;
 })();
 
-// 骨架默认 2 类, 跑通后由调用方传入更多
-const classes = (args.classes && args.classes.length)
+// 类选择优先级: 调用方显式指定 > RECON 模型推荐 > 脚本默认（resolveClasses 在 RECON 后执行）
+const callerClasses = (args.classes && args.classes.length)
   ? args.classes
-  : ["buffer-overflow", "command-injection"];
+  : null;
+const DEFAULT_CLASSES = ["buffer-overflow", "command-injection"];
+
+// 语言兼容性剪枝（A）: 类 → 所需语言（目标缺失该语言则剪掉, 防白跑; 未列出 = 全语言适用）
+const CLASS_LANG = {
+  "buffer-overflow": ["c", "cpp"],
+  "out-of-bounds-read": ["c", "cpp"],
+  "use-after-free": ["c", "cpp"],
+  "double-free": ["c", "cpp"],
+  "format-string": ["c", "cpp"],
+  "null-deref": ["c", "cpp"],
+  "uninitialized-use": ["c", "cpp"],
+  "integer-overflow": ["c", "cpp"],
+  "shell-injection": ["shell"],
+  "eval-injection": ["python"],
+  "unsafe-deserialization": ["python"],
+};
+
+function pruneByLanguage(classes, languages) {
+  const text = (languages || []).join(" ").toLowerCase();
+  const has = (t) => text.includes(t);
+  return classes.filter((cls) => {
+    const need = CLASS_LANG[cls];
+    return !need || need.some(has);
+  });
+}
 
 // code-audit 技能章节映射（prompt 指路用）
 const CLASS_SECTIONS = {
@@ -89,13 +114,18 @@ const discipline = `## 铁律（不可违反）
 // ---- 简化内联 schema（agent() 只支持 type/properties/required/items/enum/const/oneOf）----
 const RECON_SCHEMA = {
   type: "object",
-  required: ["languages", "entry_points", "cpg_path", "toolchain", "assumptions"],
+  required: ["languages", "entry_points", "cpg_path", "toolchain", "assumptions", "recommended_classes"],
   properties: {
     languages: { type: "array", items: { type: "string" } },
     entry_points: { type: "array", items: { type: "string" } },
     cpg_path: { type: "string" },
     toolchain: { type: "object" },
     assumptions: { type: "array", items: { type: "string" } },
+    recommended_classes: {
+      type: "array",
+      items: { type: "string", enum: [...Object.keys(CLASS_SECTIONS), "business-logic"] },
+      description: "RECON 基于语言/目标类型/权限上下文推荐的猎杀类清单",
+    },
   },
 };
 
@@ -153,10 +183,17 @@ ${discipline}
    对每个候选, 用 read/grep 确认语义（main/回调/信号/dbus 注册/导出表/exec 入口）, 记录最终入口点列表;
 4. 记录语言分布（c/cpp/shell/python）与权限上下文（是否 setuid/root 守护进程）。
 5. 把 recon.json（上述字段）写到 ${runDir}/recon/recon.json。
+6. 推荐猎杀类清单 recommended_classes（B）: 基于语言分布/目标类型（守护进程? 库? CLI? setuid? DBus 服务?）/
+   权限上下文, 从枚举里选**该目标实际适用**的类, 至少 3 个;
+   - 无 python → 不推 eval-injection/unsafe-deserialization; 无 shell → 不推 shell-injection;
+   - 纯 C/C++ 目标 → 推内存安全类为主; 库目标 → 考虑 access-control/权限类（导出 API 面）;
+   - root 守护进程/DBus 服务 → 推 race-condition/toctou/access-control;
+   - 在 assumptions 里写明推荐依据（一句话/类）。
 
 返回 JSON（严格按契约）:
 {languages: string[], entry_points: string[], cpg_path: string,
- toolchain: {doctor: string, joern: string, ...}, assumptions: string[]}`,
+ toolchain: {doctor: string, joern: string, ...}, assumptions: string[],
+ recommended_classes: string[]}`,
   { label: "recon", phase: "recon", schema: RECON_SCHEMA });
 
 if (!recon || !Array.isArray(recon.entry_points) || !recon.cpg_path) {
@@ -170,14 +207,21 @@ if (!recon || !Array.isArray(recon.entry_points) || !recon.cpg_path) {
     runDir,
   };
 }
-log(`RECON 完成: ${recon.languages.join("/")}, ${recon.entry_points.length} 个入口点, CPG=${recon.cpg_path}`);
+log(`RECON 完成: ${recon.languages.join("/")}, ${recon.entry_points.length} 个入口点, CPG=${recon.cpg_path}, 推荐 ${(recon.recommended_classes || []).length} 类`);
+
+// A+B 类选择: 调用方指定 > RECON 推荐 > 默认; 再按语言剪枝（防白跑）
+const requested = callerClasses || recon.recommended_classes || DEFAULT_CLASSES;
+const prunedList = pruneByLanguage(requested, recon.languages);
+const effectiveClasses = prunedList.length > 0 ? prunedList : ["command-injection", "race-condition"];
+const prunedClasses = requested.filter((c) => !prunedList.includes(c));
+log(`HUNT 类选择: ${effectiveClasses.join(", ")}${prunedClasses.length ? `（剪掉: ${prunedClasses.join(", ")}）` : ""}`);
 
 // ============================================================================
 // Phase 2: HUNT — 每 CWE 类 1 个 agent, parallel 并发 ≤6
 // ============================================================================
 phase("hunt");
 
-const huntResults = await parallel(classes.map((cls) => () =>
+const huntResults = await parallel(effectiveClasses.map((cls) => () =>
   agent(`你是 c-auditor（HUNT 阶段, 代码审计流水线段1）。
 
 先 read ${BRIEFS.auditor} 与 ${CODE_AUDIT} 的 ${CLASS_SECTIONS[cls] || cls} 章节, 再开始猎杀。
@@ -289,6 +333,13 @@ return {
   runDir,
   findings: valid,
   coverage,
+  // 类选择元数据: 请求/推荐/实际执行/剪枝 — 防止"只跑了子集却像全覆盖"的静默漏检
+  classes: {
+    requested: requested,
+    recommended: recon.recommended_classes || [],
+    effective: effectiveClasses,
+    pruned: prunedClasses,
+  },
   gate: {
     required: REQUIRED_FIELDS,
     invalid_count: invalid.length,

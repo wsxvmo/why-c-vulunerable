@@ -68,7 +68,7 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | `target` | ✅ | 目标源码绝对路径 |
 | `runDir` | 可选 | 子 agent 写产物的目录；默认 `${skillRoot}/workspace/runs/audit-<名>` |
 | `skillRoot` | 可选 | 本仓库根；默认 `/home/xvmo/why-c-vulunerable` |
-| `classes` | 可选 | 段1：CWE 类列表；默认 `["buffer-overflow","command-injection"]`。完整覆盖建议传全部类（见下） |
+| `classes` | 可选 | 段1：CWE 类列表。**优先级：调用方指定 > RECON 模型推荐 > 默认 2 类**，最终按语言剪枝（无 python 剔 eval-injection 等）。不传时由 RECON 按目标类型推荐全量有效类 |
 | `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn） |
 | `cpg_path` | 段2 必填 | 段1 recon 构建的 CPG 路径 |
 | `confirmed` | 段3 必填 | 段2 返回的 `confirmed[]` |
@@ -92,9 +92,15 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 
 | 阶段 | 形态 | agent 数 | 输出 |
 |---|---|---|---|
-| RECON | 1 个 agent | 1 | `{languages, entry_points[], cpg_path, toolchain, assumptions[]}` + `runDir/recon/recon.json` |
+| RECON | 1 个 agent | 1 | `{languages, entry_points[], cpg_path, toolchain, assumptions[], recommended_classes[]}` + `runDir/recon/recon.json` |
 | HUNT | parallel, 每 CWE 类 1 个 | ≤6 并发 | 每类 `{cls, findings[], checked[], unchecked[], notes?}` + `runDir/hunt/<cls>/` |
 | GAPFIL | 最小循环（对 INCOMPLETE 类补查 1 轮） | ≤6 并发 | 同上（替换原结果） |
+
+### 类选择机制（A+B）
+
+1. **优先级**：`args.classes`（调用方）> RECON 的 `recommended_classes`（模型按语言/目标类型/权限上下文推荐，至少 3 个）> 默认 `["buffer-overflow","command-injection"]`。
+2. **语言剪枝（确定性兜底）**：RECON 完成后脚本按 `recon.languages` 剪掉不适用类——无 python 剔 `eval-injection`/`unsafe-deserialization`，无 shell 剔 `shell-injection`，非 C/C++ 剔内存安全 8 类；剪光则落 `["command-injection","race-condition"]`。
+3. **防静默漏检**：返回 `classes: {requested, recommended, effective, pruned}` ——调用方能看见跑了哪些类、剪了哪些类、为什么。coverage 只覆盖 effective 类，不等于全类审计。
 
 **finding 必填字段**（与 `schemas/stage-finding.json` 对齐）：`vuln_class, file, line(整数), sink, entry_point, confidence(low|medium|high), evidence(entry→sink)`。
 
