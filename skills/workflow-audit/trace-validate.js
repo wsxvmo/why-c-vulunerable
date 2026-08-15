@@ -47,6 +47,12 @@ const cpg = args.cpg_path;
 if (!cpg) throw new Error("args.cpg_path 必填（段1 recon 产物）");
 const runDir = args.runDir || `${SKILL_ROOT}/workspace/runs/audit-seg2`;
 
+// 段1 RECON 提炼的经验前馈注入块（调用方从段1 返回的 tricks_injection 转发）
+const tricksInjection = args.tricks_injection || "";
+const tricksBlock = tricksInjection
+  ? `\n## 经验前馈（历史复盘注入, 先读再干, 按此方向优先排查）\n${tricksInjection}`
+  : "";
+
 // 段1 findings 无 id — 分配稳定 id（F1..Fn），trace/validate 以 finding_id 关联
 const items = findings.map((f, i) => ({ ...f, id: f.id || `F${i + 1}` }));
 
@@ -124,6 +130,7 @@ const traceResults = await parallel(items.map((f) => () => {
   return agent(`你是 c-tracer（TRACE 阶段, 代码审计流水线段2, 模型 deliberate disagreement）。
 
 先 read ${BRIEFS.tracer} 与 ${SKILL_ROOT}/skills/pipeline/SKILL.md 的 TRACE 部分, 再开始。
+${tricksBlock}
 
 finding 待追踪（finding_id 用本对象 id 字段的值, 原样返回）:
 ${JSON.stringify(f, null, 2)}

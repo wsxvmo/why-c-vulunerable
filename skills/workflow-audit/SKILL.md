@@ -71,6 +71,7 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | `classes` | 可选 | 段1：CWE 类列表。**默认并入 RECON 推荐（RECON 为主要方向）**；传 `classesMode:"pin"` 时仅用此清单 |
 | `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn） |
 | `cpg_path` | 段2 必填 | 段1 recon 构建的 CPG 路径 |
+| `tricks_injection` | 段2 可选 | 段1 返回的 `tricks_injection`（经验前馈注入块），原样转发 |
 | `confirmed` | 段3 必填 | 段2 返回的 `confirmed[]` |
 | `coverage` | 段3 可选 | 段1 返回的 `coverage[]`，补进报告 |
 | `models` | 可选 | `{hunt?, trace?, validate?, chain?, report?}` 模型覆盖 |
@@ -92,9 +93,19 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 
 | 阶段 | 形态 | agent 数 | 输出 |
 |---|---|---|---|
-| RECON | 1 个 agent | 1 | `{languages, entry_points[], cpg_path, toolchain, assumptions[], recommended_classes[]}` + `runDir/recon/recon.json` |
+| RECON | 1 个 agent | 1 | `{languages, entry_points[], cpg_path, toolchain, assumptions[], recommended_classes[], tricks_injection, exclude_files[]}` + `runDir/recon/recon.json` |
 | HUNT | parallel, 每 CWE 类 1 个 | ≤6 并发 | 每类 `{cls, findings[], checked[], unchecked[], notes?}` + `runDir/hunt/<cls>/` |
 | GAPFIL | 最小循环（对 INCOMPLETE 类补查 1 轮） | ≤6 并发 | 同上（替换原结果） |
+
+### 经验前馈（tricks 注入, 原框架硬规则）
+
+RECON 按目标类型从 `skills/tricks/SKILL.md` 选 2-4 个相关章节（守护进程/DBus → §2 身份信任边界+§4 深挖；库目标 → §5 差分索引；setuid → §1 攻击面优先级），提炼 ≤200 字可操作注入块 → `tricks_injection`，脚本**前置到每个 HUNT/GAPFIL auditor 提示词**，并经段1 返回值转发给段2（`args.tricks_injection`）注入每个 TRACE 提示词。这是"历史复盘经验进入本轮审计"的通道（libsecurity1 那次 RECON 即兴生成该字段但编排层未转发的缺口已补上）。
+
+### 技能加载分层（audit-runner/audit-tools）
+
+- **RECON**：read `audit-runner/SKILL.md` 与 `audit-tools/SKILL.md` **全量一次**（跑 doctor/建 CPG/生命周期与 fork 策略，一次值回票价）。
+- **执行 agent（HUNT/GAPFIL/TRACE/VALIDATE）**：只带脚本内置纪律块（禁裸 joern/println/降级/干净 cwd/工具分工），**不重读全量 SKILL.md**（内容重叠+稀释注意力）；遇到纪律块未覆盖的边界情况时条件引用（如 CPG 并发排队 → read `audit-runner/SKILL.md` §并发策略）。
+- **待办**：CPG fork 优化——RECON 产出 `fork_paths[]`（每并发 agent 一份私有 CPG 副本），脚本分配给各 auditor，替代共享 CPG + flock 串行。
 
 ### 类选择机制（A+B — RECON 为主要方向）
 

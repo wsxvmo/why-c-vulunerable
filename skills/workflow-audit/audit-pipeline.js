@@ -33,6 +33,7 @@ const BRIEFS = {
 };
 const CODE_AUDIT = `${SKILL_ROOT}/skills/code-audit/SKILL.md`;
 const QUERIES = `${SKILL_ROOT}/skills/audit-runner/queries`;
+const TRICKS = `${SKILL_ROOT}/skills/tricks/SKILL.md`;
 
 const target = args.target;
 if (!target) throw new Error("args.target 必填: 目标源码绝对路径");
@@ -115,7 +116,7 @@ const discipline = `## 铁律（不可违反）
 // ---- 简化内联 schema（agent() 只支持 type/properties/required/items/enum/const/oneOf）----
 const RECON_SCHEMA = {
   type: "object",
-  required: ["languages", "entry_points", "cpg_path", "toolchain", "assumptions", "recommended_classes"],
+  required: ["languages", "entry_points", "cpg_path", "toolchain", "assumptions", "recommended_classes", "tricks_injection"],
   properties: {
     languages: { type: "array", items: { type: "string" } },
     entry_points: { type: "array", items: { type: "string" } },
@@ -126,6 +127,10 @@ const RECON_SCHEMA = {
       type: "array",
       items: { type: "string", enum: [...Object.keys(CLASS_SECTIONS), "business-logic"] },
       description: "RECON 基于语言/目标类型/权限上下文推荐的猎杀类清单",
+    },
+    tricks_injection: {
+      type: "string",
+      description: "按目标类型从 skills/tricks/SKILL.md 提炼的 ≤200 字经验前馈注入块, 前置到每个 HUNT/GAPFIL auditor 提示词",
     },
     exclude_files: {
       type: "array",
@@ -198,12 +203,16 @@ ${discipline}
    - 纯 C/C++ 目标 → 推内存安全类为主; 库目标 → 考虑 access-control/权限类（导出 API 面）;
    - root 守护进程/DBus 服务 → 推 race-condition/toctou/access-control;
    - 在 assumptions 里写明推荐依据（一句话/类）。
-7. 把 recon.json（上述字段）写到 ${runDir}/recon/recon.json。
+7. tricks 经验前馈（原框架硬规则, 必做）: read ${TRICKS} 的"章节 → 适用场景映射"部分,
+   按目标类型选 2-4 个相关章节（如守护进程/DBus → §2 身份信任边界 + §4 深挖技巧;
+   库目标 → §5 差分索引; setuid → §1 攻击面优先级; 补丁密集 → §3 补丁即地图）,
+   提炼 ≤200 字**可操作**的注入块写入 tricks_injection（给出具体检查方向, 不是泛泛而谈）。
+8. 把 recon.json（上述字段）写到 ${runDir}/recon/recon.json。
 
 返回 JSON（严格按契约）:
 {languages: string[], entry_points: string[], cpg_path: string,
  toolchain: {doctor: string, joern: string, ...}, assumptions: string[],
- recommended_classes: string[], exclude_files: string[]}`,
+ recommended_classes: string[], tricks_injection: string, exclude_files: string[]}`,
   { label: "recon", phase: "recon", schema: RECON_SCHEMA });
 
 if (!recon || !Array.isArray(recon.entry_points) || !recon.cpg_path) {
@@ -240,6 +249,11 @@ const exclusionBlock = (recon.exclude_files && recon.exclude_files.length)
   ? `\n## 污染控制（防基准泄漏）\n以下文件是目标树内的非源码产物/基准文件, **不得读取、不得引用、不得作为审计依据**:\n${recon.exclude_files.map((f) => `- ${f}`).join("\n")}\n违反即审计无效。`
   : "";
 
+// 经验前馈: RECON 提炼的 tricks 注入块 → 前置到每个 auditor 提示词（原框架硬规则）
+const tricksBlock = recon.tricks_injection
+  ? `\n## 经验前馈（历史复盘注入, 先读再干, 按此方向优先排查）\n${recon.tricks_injection}`
+  : "";
+
 // ============================================================================
 // Phase 2: HUNT — 每 CWE 类 1 个 agent, parallel 并发 ≤6
 // ============================================================================
@@ -249,6 +263,7 @@ const huntResults = await parallel(effectiveClasses.map((cls) => () =>
   agent(`你是 c-auditor（HUNT 阶段, 代码审计流水线段1）。
 
 先 read ${BRIEFS.auditor} 与 ${CODE_AUDIT} 的 ${CLASS_SECTIONS[cls] || cls} 章节, 再开始猎杀。
+${tricksBlock}
 
 目标: ${target}
 猎杀类: ${cls}
@@ -293,6 +308,7 @@ if (incompleteFirst.length > 0 && roundsDone < gapfillRounds) {
     agent(`你是 c-auditor（GAPFIL 补查 ${r.cls}, 代码审计流水线段1）。
 
 先 read ${BRIEFS.auditor} 与 ${CODE_AUDIT} 的 ${CLASS_SECTIONS[r.cls] || r.cls} 章节。
+${tricksBlock}
 
 目标: ${target}
 CPG: ${recon.cpg_path}
@@ -367,6 +383,8 @@ return {
     effective: effectiveClasses,
     pruned: prunedClasses,
   },
+  // 经验前馈注入块 — 段2 TRACE 提示词需要, 调用方转发给 trace-validate.js 的 args.tricks_injection
+  tricks_injection: recon.tricks_injection || "",
   gate: {
     required: REQUIRED_FIELDS,
     invalid_count: invalid.length,
