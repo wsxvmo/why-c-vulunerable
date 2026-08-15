@@ -70,7 +70,10 @@ const discipline = `## 铁律（不可违反）
    - 若 audit-runner 不在 PATH, 用绝对路径: ${AUDIT_RUNNER_FALLBACK}
 3. 空结果（仅 INFO 行）→ 转 grep 兜底, 不重试白等。
 4. 产物写到 ${runDir} 下对应子目录（先 mkdir -p）。
-5. 结论必须逐跳验证: read/grep 确认每跳真实存在、无同名碰撞、类型匹配。`;
+5. 结论必须逐跳验证: read/grep 确认每跳真实存在、无同名碰撞、类型匹配。
+6. CPG 私有副本（fork, 并行防串行）: 先查 CPG 大小, 若 ≤100MB 运行
+   audit-runner cpg fork --src ${cpg} --n 1 --dir ${runDir}/cpg-forks/ 取私有副本,
+   之后所有 cpg query 一律用私有副本（并行 trace 免 flock 排队）; >100MB 或 fork 失败用共享 CPG。`;
 
 // ---- 简化内联 schema ----
 const TRACE_SCHEMA = {

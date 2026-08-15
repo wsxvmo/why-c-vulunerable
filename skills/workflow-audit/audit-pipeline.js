@@ -254,6 +254,10 @@ const tricksBlock = recon.tricks_injection
   ? `\n## 经验前馈（历史复盘注入, 先读再干, 按此方向优先排查）\n${recon.tricks_injection}`
   : "";
 
+// CPG 私有副本（fork, 必做）: scan_cpg 无锁且 --overwrite 原地重写共享 CPG,
+// 并行 HUNT 必须私有副本防损坏; 小 CPG(≤100MB) fork 毫秒级, 大 CPG 降级共享+flock
+const forkBlock = `\n## CPG 私有副本（fork, 必做, 防并发损坏）\n共享 CPG: ${recon.cpg_path}\n先查 CPG 大小（ls -l / stat）: 若 ≤100MB, 运行\n  audit-runner cpg fork --src ${recon.cpg_path} --n 1 --dir ${runDir}/cpg-forks/\n取回私有副本路径, 之后本 agent 所有 cpg query 与 scan_cpg **一律用私有副本**; 若 >100MB 直接用共享 CPG（flock 串行, 正确性优先）; fork 失败降级共享 CPG。`;
+
 // ============================================================================
 // Phase 2: HUNT — 每 CWE 类 1 个 agent, parallel 并发 ≤6
 // ============================================================================
@@ -272,6 +276,7 @@ CPG: ${recon.cpg_path}
 产物目录: ${runDir}/hunt/${cls}/ （先 mkdir -p）
 
 ${discipline}
+${forkBlock}
 ${exclusionBlock}
 
 本任务（自限: 最多查 3 个入口点）:
@@ -315,6 +320,7 @@ CPG: ${recon.cpg_path}
 产物目录: ${runDir}/hunt/${r.cls}/ （追加写入）
 
 ${discipline}
+${forkBlock}
 ${exclusionBlock}
 
 上一轮覆盖情况:
