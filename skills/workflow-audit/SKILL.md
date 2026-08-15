@@ -39,6 +39,33 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | VALIDATE | deepseek-v4-pro | 与 HUNT 不同，避免共享盲点 |
 | CHAIN/REPORT | deepseek-v4-flash | 轻量分析 |
 
+## 审计启动前置（主 agent 每次跑审计前必做）
+
+台账功能与流水线的绑定点：**由主 agent（不是 workflow 子 agent）在发起段1 前完成**。主 agent 有 cordis 工具与 bash；workflow 子 agent 是独立会话、未必有 cordis 工具，所以不派给 RECON。
+
+**① 台账插件就绪检查/恢复（每进程一次）**：
+```
+1. cordis_inspect_self（不传参）列出当前插件 → 找 ledger-manager
+2. 不存在则恢复:
+   read extensions/ledger-manager/host.js      → 作为 code.host
+   read extensions/ledger-manager/client.js    → 作为 code.client
+   cordis_define({plugin:{kind:"new", idPrefix:"ledg"}, name:"ledger-manager",
+                  purpose:"审计台账管理面板：输入框工具行按钮+锚定弹出面板+Run 卡片常驻",
+                  code.host:<host.js>, code.client:<client.js>})
+   cordis_run → GUI 审批一次（单勾）→ 主 agent 提示用户强刷页面
+3. 已存在（本进程已恢复过）→ 跳过
+```
+插件是进程级 + 浏览器应用级的：一个进程内所有会话共用，**进程重启后才需要重做 ①**。
+
+**② run 台账初始化（每 run 一次, 幂等）**：
+```bash
+python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py init <runDir> \
+  --title "Pipeline: <target> <时间戳>" --target "<target>"
+```
+→ 该 run 从开始就有台账骨架（run_meta.json），ledger-manager 面板立即可见；段3 LEDGER 阶段收尾落账时 init 幂等跳过。已有 runDir 台账则跳过（续跑场景）。
+
+> 目的：台账不是"跑完才有"，而是"审计一开始就可见、结束时填满"——ledger-manager 面板在整条流水线期间都能实时看该 run 的案件/证据进展。
+
 ## 调用方式（段1）
 
 主 agent 每次调用前 **read 脚本文件**，内容作为 `script` 参数传入：
