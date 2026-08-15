@@ -124,13 +124,18 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 - [x] 段1 冒烟跑通：ksaf-dynamic-uid 3 agent 全通，gate 0 无效（2025-08-15，详见 `workspace/runs/ksaf-dynamic-uid-smoke/`）
 - [x] 调用方只发一次 workflow 调用、只持有紧凑 JSON 中间产物
 - [x] token 对比记录：主会话单轮 < 10 万（实测 ~1 万量级，基线 29.3 万；`workspace/runs/ksaf-dynamic-uid-smoke/token-comparison.md`）
-- [ ] v2 完成后：VALIDATE 对 confirmed finding 有 sanitizer 证据（poc_path + sanitizer_result）
+- [x] **三段式端到端**：ksaf-init 纯净源码 段1(2 假设) → 段2(双 UNREACHABLE, pro 否证 hunter 粘滞位误读) → 段3(干净报告)，见 `workspace/runs/ksaf-init-clean-2025-08-15/E2E-SUMMARY.md`
+- [ ] **VALIDATE sanitizer 分支**：代码完整但无 finding 到达（本轮全被 TRACE 否掉）— 需已知漏洞 fixture 补验
+- [ ] **casefile/ledger 对接**：确定性 CLI（ledger add/log）由 agent 调用，待接入
 
 ## 状态
 
 - **v1（完成）**：段1（RECON→HUNT→GAPFIL）已实现并冒烟通过（ksaf-dynamic-uid，3 agent，token 对比记录在 `workspace/runs/ksaf-dynamic-uid-smoke/token-comparison.md`）。
-- **v2（已实现）**：段2（TRACE+VALIDATE，KILL 税前置 + 否证优先 + 条件门禁）+ 段3（CHAIN+REPORT，CVSS 富化）+ model 分层（trace/validate=pro, hunt/chain/report=flash）。端到端验证见 `workspace/runs/ksaf-init-.../`。
-- **待办**：casefile/ledger 对接（确定性 CLI 由 agent 调用）；扩展 CWE 类（`classes` 参数按 code-audit 章节逐类加）；README 增补。
+- **v2（完成）**：段2（TRACE+VALIDATE，KILL 税前置 + 否证优先 + 条件门禁）+ 段3（CHAIN+REPORT，CVSS 富化）+ model 分层（trace/validate=pro, hunt/chain/report=flash）。端到端验证（ksaf-init 纯净源码）见 `workspace/runs/ksaf-init-clean-2025-08-15/E2E-SUMMARY.md`。
+- **待办**：
+  1. VALIDATE sanitizer 分支补验（用已知漏洞 fixture 触发一次 confirmed 路径）
+  2. casefile/ledger 对接（ledger add/log 确定性 CLI 由 agent 调用）
+  3. 扩展 CWE 类（`classes` 参数按 code-audit 章节逐类加）
 
 ## 相关路径
 

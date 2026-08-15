@@ -67,6 +67,18 @@ bash install-c.sh
 
 Skills（`skills/pipeline` → skill 名 `codeaudit-pipeline`、`skills/code-audit`）自动加载进 agent 上下文。无需斜杠命令 — 直接让 agent 开猎即可。
 
+### workflow 模式（无主-agent 流水线，推荐用于完整审计）
+
+`skills/workflow-audit/`（skill 名 `workflow-audit`）把同一套流水线改成 **DSH `workflow` 工具驱动的无主-agent 作业**：主 agent 只发一次调用，各阶段在新鲜上下文的子 agent 中执行，消灭主 agent 的"会话长寿税"（实测基线 32.1M tokens 中 31.8M 是历史重发；workflow 模式主 agent 单轮 ~1 万量级）。
+
+```
+段1 audit-pipeline.js   RECON → HUNT → GAPFIL        → {findings[], coverage}
+段2 trace-validate.js   TRACE → VALIDATE             → {confirmed[], killed[]}
+段3 chain-report.js     CHAIN → REPORT               → {report}
+```
+
+调用方式：`read skills/workflow-audit/<段脚本>` → `workflow({meta, script: <内容>, args: {target, ...}})`，详见 SKILL.md。
+
 ## 流水线阶段机
 
 ```
