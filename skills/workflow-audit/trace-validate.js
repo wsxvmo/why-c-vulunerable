@@ -155,10 +155,12 @@ ${discipline}
     { label: `trace:${fid}`, phase: "trace", schema: TRACE_SCHEMA, model: MODELS.trace });
 }));
 
-const traced = traceResults.filter(Boolean);
-const reachable = traced.filter((t) => t.trace_result === "REACHABLE");
-const unreachable = traced.filter((t) => t.trace_result === "UNREACHABLE");
-const killedByGate = traced.filter((t) => t.trace_result === "KILLED");
+// traceResults 与 items 一一对应（parallel 保序）; 绑定 trace ↔ finding,
+// 防 finding_id 偏差（agent 偶发改写）导致聚合时 finding 字段丢失
+const tracePairs = traceResults.map((t, i) => ({ trace: t, item: items[i] })).filter((p) => p.trace);
+const reachable = tracePairs.filter((p) => p.trace.trace_result === "REACHABLE");
+const unreachable = tracePairs.filter((p) => p.trace.trace_result === "UNREACHABLE");
+const killedByGate = tracePairs.filter((p) => p.trace.trace_result === "KILLED");
 log(`TRACE 完成: REACHABLE=${reachable.length}, UNREACHABLE=${unreachable.length}, KILLED=${killedByGate.length}`);
 
 // ============================================================================
@@ -167,9 +169,8 @@ log(`TRACE 完成: REACHABLE=${reachable.length}, UNREACHABLE=${unreachable.leng
 phase("validate");
 log(`VALIDATE: ${reachable.length} 个 REACHABLE finding, 模型=${MODELS.validate}`);
 
-const validateResults = await parallel(reachable.map((t) => () => {
-  const f = items.find((x) => x.id === t.finding_id) || { finding_id: t.finding_id };
-  const fid = t.finding_id;
+const validateResults = await parallel(reachable.map(({ trace: t, item: f }) => () => {
+  const fid = t.finding_id || f.id;
   return agent(`你是 c-exploit（VALIDATE 阶段 Phase 1: EXPLOIT, 代码审计流水线段2, 模型 deliberate disagreement）。
 
 先 read ${BRIEFS.exploit} 与 ${CODE_AUDIT} §6 确认与否证纪律, 再开始。
@@ -242,10 +243,15 @@ ${JSON.stringify(v, null, 2)}
 const gateFail = validations.filter((v) => checkValidation(v).length > 0);
 const confirmed = [];
 const killed = [];
-for (const v of validations) {
-  const t = reachable.find((x) => x.finding_id === v.finding_id);
-  const f = findings.find((x) => x.id === v.finding_id) || { finding_id: v.finding_id };
-  const entry = { finding: f, trace: t, validation: v };
+for (let k = 0; k < validations.length; k++) {
+  const v = validations[k];
+  // 先按 finding_id 匹配, 失败则按序兜底（validateResults 与 reachable 同序, repair 保序）
+  const pair = reachable.find((p) => p.trace.finding_id === v.finding_id) || reachable[k] || {};
+  const entry = {
+    finding: pair.item || { finding_id: v.finding_id },
+    trace: pair.trace,
+    validation: v,
+  };
   if (v.status === "confirmed") confirmed.push(entry);
   else killed.push(entry);
 }
@@ -258,11 +264,16 @@ return {
   target,
   confirmed,
   killed,
+  // TRACE 级 KILLED（KILL 税拦截, 未进 VALIDATE）— 完整 trace 对象, 供段3/人工评审
+  killed_by_gate: killedByGate.map((p) => ({
+    finding: p.item || { finding_id: p.trace.finding_id },
+    trace: p.trace,
+  })),
   gate: {
     repairs,
     gate_fail_count: gateFail.length,
     gate_fail: gateFail.map((v) => ({ finding_id: v.finding_id, issues: checkValidation(v) })),
   },
-  stats: { traced: traced.length, reachable: reachable.length, unreachable: unreachable.length, killed_by_gate: killedByGate.length },
-  agents: { trace: traced.length, validate: validations.length, started: traceResults.length + validations.length + repairs },
+  stats: { traced: tracePairs.length, reachable: reachable.length, unreachable: unreachable.length, killed_by_gate: killedByGate.length },
+  agents: { trace: tracePairs.length, validate: validations.length, started: traceResults.length + validations.length + repairs },
 };

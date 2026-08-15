@@ -86,6 +86,8 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 
 **脚本内条件门禁**（段2）：confirmed → poc_path/run_log/evidence_extracted 必填；killed → kill_reason 必填；不合格 repair ≤2 次重派。
 
+**段2 返回契约**：`confirmed[]`（每项含完整 finding+trace+validation）、`killed[]`（VALIDATE 级 kill）、`killed_by_gate[]`（TRACE 级 KILL 税拦截，含完整 trace 对象）、`gate`、`stats`、`agents`。finding 与 trace 按序绑定（pair），finding_id 偏差有 positional 兜底，不会丢 finding 字段。
+
 ## 段1 阶段契约
 
 | 阶段 | 形态 | agent 数 | 输出 |
