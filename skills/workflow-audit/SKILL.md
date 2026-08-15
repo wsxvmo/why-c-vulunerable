@@ -170,7 +170,23 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
    python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py logview <runDir> <case-id>
    python3 /home/xvmo/.dsh/.agent-presets/vuln-hunter/tools/casefile.py report <runDir>   # 或 --out 输出到文件
    ```
-3. **直接打开报告文件**：`<runDir>/report/casefile-report.md`（含 findings 表 + 证据时间线），可在 GUI 里 read 或任意编辑器打开。
+3. **台账管理面板（ledger-manager 动态插件）**：输入框工具行"台账"按钮弹出面板（扫描 run → 案件表/状态筛选/类过滤/CSV/时间线，10s 自动刷新）；插件 Run 卡片内常驻同款面板。
+
+## ledger-manager 插件踩坑记录（DSH 动态插件开发）
+
+开发"台账管理"动态插件（`ledg-47`，Host fs 直读 + Client 面板）时踩的坑，供后续插件开发复用：
+
+| 坑 | 结论 |
+|---|---|
+| `shell.overlay` 浮动面板不可见 | 该 overlay 层在本构建里渲染 occupant 异常（`position:absolute/fixed` 均不可见）——**不要依赖它做业务面板** |
+| `conversation.input.dock` 不可见 | 同理，某些 additive slot 位在当前构建未渲染 |
+| 侧栏 `sidebar.footer.action` 按钮被截断/点击无效 | rail 模式需 cordis 式 `rail` 变体（36px 圆）适配；且该位在本环境有兼容问题 |
+| **最终可行方案** | 触发器放 `conversation.input.left`（输入框工具行，与访问模式控件并列）；面板用 **absolute 锚定**在触发器上方（`position:absolute; bottom:calc(100%+8px)`），普通流锚定不碰 fixed/overlay |
+| `tool.view.cordis`（key `self`） | **官方保证渲染**的插件交互区——Run 卡片内常驻面板，永远兜底可见 |
+| 面板头部滚动消失 | `position:sticky; top:-12px; margin:-12px` 覆盖容器 padding 的技巧，关闭按钮 `margin-left:auto` 钉右上角 |
+| Client 无 `document`/`window` | 禁用下载 API/scrollIntoView；CSV 用 textarea 全选复制 |
+
+插件是**动态的（进程局部）**：重启后需重新定义/运行；如需跨会话常驻，升级为宿主 cordis.yml 静态插件。
 
 ## 状态
 
