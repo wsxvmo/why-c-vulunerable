@@ -65,7 +65,7 @@ If any prerequisite is missing, record it in the pipeline-run case and either as
 ## Stage Config
 
 Each stage has:
-- **model** — which model class to dispatch on (hunt = standard + reachability, validate = different/stronger than hunt for deliberate disagreement; tracer 已并入 HUNT)
+- **model** — 默认所有子 agent **继承主 agent 模型**；需要 deliberate disagreement 时经模型覆盖（如 `args.models.validate` 指定更强/不同模型）。hunt = 发现+可达性，validate = 独立否定者（tracer 已并入 HUNT）
 - **tools** — what tools the agent gets (trace has no write tools)
 - **output schema** — what shape the stage must emit
 - **max_turns** — when to terminate a stuck agent

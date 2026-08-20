@@ -40,6 +40,8 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | VALIDATE | **继承主 agent**（`args.models.validate` 可覆盖） | 与主 agent 同模型；**可覆盖为更强/不同模型**，独立否定 HUNT 的可达性判定（deliberate disagreement） |
 | CHAIN/REPORT | **继承主 agent**（`args.models.chain/report` 可覆盖） | 与主 agent 同模型，轻量分析 |
 
+> **实现（2026-08-21 复核）**：三个脚本只在 `args.models.*` / `args.models.provider` 显式传入时才给 `agent()` 附加 `model` / `provider`，否则完全继承主 agent；没有硬编码默认模型。
+
 ## 审计启动前置（主 agent 每次跑审计前必做）
 
 台账功能与流水线的绑定点：**由主 agent（不是 workflow 子 agent）在发起段1 前完成**。主 agent 有 cordis 工具与 bash；workflow 子 agent 是独立会话、未必有 cordis 工具，所以不派给 RECON。
@@ -200,6 +202,11 @@ RECON 按目标类型从 `skills/tricks/SKILL.md` 选 2-4 个相关章节（守�
 
 **脚本内门禁**：`agent()` schema 只校验子集（type/properties/required/items/enum），深度校验（字段缺失、line 非整数、条件必填）在脚本聚合段做，不合格的 finding 列入 `gate.invalid` 返回，不静默丢弃。
 
+**schema 门禁（2026-08-21 恢复，适配合并后契约）**：
+- HUNT/GAPFIL：agent 写完 `findings.json` 后自跑 `audit-runner gate --stage finding --run-dir ${runDir} --output ...`（使用合并后 `schemas/stage-finding.json`），脚本聚合段再做类型/枚举/条件门禁；
+- VALIDATE：agent 自跑 `audit-runner gate --stage validation --output ...`，脚本内 `schemaGate()` 按 `stage-validation.json` 做类型/枚举/条件校验并进入 repair 循环；
+- 段2 因 workflow `agent()` 的 `schema` 选项会诱发 `structured_output` 导致返回 null，**不把 schema 传给 agent()**，改用 `parseAgentJson` + 脚本内 `schemaGate` 双保险（语义等价的门禁恢复）。
+
 ## 纪律块（每个 agent prompt 内置, 与 pipeline skill 一致）
 
 1. **绝不编译目标项目**；只用 read/grep/静态查询/CPG。
@@ -323,7 +330,9 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
   - 段2 改名 `validate.js`：只对 REACHABLE finding 派 c-exploit；UNREACHABLE 进 `unreachable[]`；
   - VALIDATE 增加"独立可达性挑战"（不盲信 HUNT trace，先独立否证再 PoC），补偿合并丢失的第二视角；
   - `schemas/stage-finding.json` 升级为 finding+trace 合并契约；`gate.py` 同步；`tracer.md`/`stage-trace.json` 标 ARCHIVED；
-  - 全通纪律从 TRACE 平移至 HUNT 判定（导出契约入口默认 REACHABLE 仍成立）。
+  - 全通纪律从 TRACE 平移至 HUNT 判定（导出契约入口默认 REACHABLE 仍成立）；
+  - **默认模型继承主 agent 复核**：三脚本仅在 `args.models.*` 显式传入时附加 model/provider；
+  - **schema 门禁恢复**：HUNT/VALIDATE 自跑 `audit-runner gate`（合并后契约），段2 用脚本内 `schemaGate()` 替代 workflow `schema` 选项（避免 structured_output null 问题）。
 - **类空间（已补全 25 键）**：`CLASS_SECTIONS` 覆盖 schema 枚举全部类（除 other）——内存安全 8 + 注入/路径 5（含 shell-injection）+ 权限 4（含 spoofable-identity）+ Python 2（eval-injection/unsafe-deserialization）+ 交叉 5（toctou/race-condition/memory-leak/resource-leak/crypto-weakness/info-disclosure）。RECON 按目标实际适用性从中选 ≥3 类；**不要再传 `classes: [全部键]`**（已废除）。
 - **待办**：
   1. VALIDATE sanitizer 分支已在 libsecurity1 验证（F1/F2/F3 均 sanitizer/repro 确认）✅

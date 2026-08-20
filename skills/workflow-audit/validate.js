@@ -93,6 +93,8 @@ const items = findings.map((f, i) => ({ ...f, id: f.id || `F${i + 1}` }));
 
 // 2026-08-20 健壮化: 不依赖 agent() schema（schema 会诱发子代理 structured_output 工具,
 // 且限速/代码块会导致 null）。改为取最终文本后脚本内解析 JSON（兼容 ```json 围栏）。
+// 2026-08-21 schema 门禁恢复: 脚本内 schemaGate() 按 VALIDATION_SCHEMA 做类型/枚举/条件校验,
+// 与 checkValidation 合并进 repair 循环; 同时 VALIDATE agent 自跑 audit-runner gate --stage validation。
 function parseAgentJson(text) {
   if (!text) return null;
   let s = String(text).trim();
@@ -126,7 +128,7 @@ const discipline = `## 铁律（不可违反）
    audit-runner cpg fork --src ${cpg} --n 1 --dir ${runDir}/cpg-forks/ 取私有副本,
    之后所有 cpg query 一律用私有副本（并行 VALIDATE 免 flock 排队）; >100MB 或 fork 失败用共享 CPG。`;
 
-// ---- 简化内联 schema（VALIDATE 返回仍走 parseAgentJson, schema 仅作文档/对照）----
+// ---- 简化内联 schema（VALIDATE 返回仍走 parseAgentJson + 脚本内 schemaGate 门禁）----
 const VALIDATION_SCHEMA = {
   type: "object",
   required: ["finding_id", "status", "technique_used", "detection_method"],
@@ -248,14 +250,40 @@ function allPassViolation(v, pair) {
   return [`kill_reason 违背全通(导出契约入口默认存在消费者): 命中 "${hits.join('","')}" — 不得用"无消费者/非特权直连/文件权限门/no-gain"做 kill; 若机制被否证请改写 kill_reason 聚焦机制本身; 若仅环境无法复现用 status=env_blocked`];
 }
 
+// schema 门禁（2026-08-21 恢复, 适配合并后契约）:
+//   workflow agent() 的 schema 选项会诱发 structured_output 导致 null, 段2 不传 schema,
+//   改为脚本内 schemaGate + parseAgentJson 双保险; 同时 VALIDATE agent 自跑
+//   audit-runner gate --stage validation（schemas/stage-validation.json）做权威校验。
+function schemaGate(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return ["agent 输出非对象"];
+  const issues = [];
+  for (const k of ["finding_id", "status", "technique_used", "detection_method"]) {
+    if (v[k] === undefined || v[k] === null || v[k] === "") issues.push(`缺字段 ${k}`);
+  }
+  if (v.status !== undefined && !["confirmed", "killed", "env_blocked"].includes(v.status)) {
+    issues.push(`status 非法: ${v.status}`);
+  }
+  if (v.technique_used !== undefined && !["asan", "ubsan", "valgrind", "minimal-repro", "manual-review"].includes(v.technique_used)) {
+    issues.push(`technique_used 非法: ${v.technique_used}`);
+  }
+  if (v.kill_category !== undefined && !["mechanism_disproven", "no_real_impact", "unreachable_confirmed", "other"].includes(v.kill_category)) {
+    issues.push(`kill_category 非法: ${v.kill_category}`);
+  }
+  if (v.refinement_attempts !== undefined && (!Number.isInteger(v.refinement_attempts) || v.refinement_attempts < 1)) {
+    issues.push("refinement_attempts 需为 ≥1 整数");
+  }
+  return issues;
+}
+
 function checkValidation(v, pair) {
   if (!v) return ["agent 失败(返回 null)"];
+  const issues = schemaGate(v);
+  if (issues.length) return issues;
   if (v.status === "confirmed") {
     const missing = ["poc_path", "run_log", "evidence_extracted"].filter((k) => !v[k]);
     return missing.length ? missing.map((k) => `confirmed 缺 ${k}`) : [];
   }
   if (v.status === "killed") {
-    const issues = [];
     if (!v.kill_reason) issues.push("killed 缺 kill_reason");
     issues.push(...allPassViolation(v, pair));
     return issues;

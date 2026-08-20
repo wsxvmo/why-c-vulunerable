@@ -674,7 +674,11 @@ ${exportBlockForHunt(g)}
    - REACHABLE 必填 impact_if_reachable; UNREACHABLE 必填 unreachable_reason。
 4. 只输出有证据链的 finding（vuln_class 必须填实际类, 不是组标识）; 每个候选点/入口点的检查结果记入 checked;
    查不完的记入 unchecked 交回（自限: 单 agent 最多查 3 个入口点, 超出列入 unchecked）;
-5. 把 findings.json + 证据片段写到 ${runDir}/hunt/<组名>/。
+5. 把 findings.json + 证据片段写到 ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/。
+6. **schema 门禁（恢复, 2026-08-21）**: 写完 findings.json 后跑权威校验:
+   audit-runner gate --stage finding --run-dir ${runDir} --output ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json
+   （使用合并后 schemas/stage-finding.json; 需 QUICK-PASS + AUTHORITATIVE PASS 才算合格;
+     失败按提示补字段后重写 findings.json 并重跑 gate; 若 audit-runner 不在 PATH 用绝对路径 ${AUDIT_RUNNER_FALLBACK}）。
 
 返回 JSON（严格按契约）:
 {cls: "<组标识: ${g.file}>", findings: [{vuln_class, file, line(整数), sink, entry_point,
@@ -730,6 +734,10 @@ ${exportBlockForHunt(g)}
 trace_result/call_chain/data_flow/defenses_checked/reachability_basis; REACHABLE 必填
 impact_if_reachable, UNREACHABLE 必填 unreachable_reason; 导出契约入口默认 REACHABLE。
 
+**schema 门禁（恢复, 2026-08-21）**: 补查结果写 ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json 后,
+跑 audit-runner gate --stage finding --run-dir ${runDir} --output ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json
+（需 QUICK-PASS + AUTHORITATIVE PASS; 失败按提示补字段重写; audit-runner 不在 PATH 用 ${AUDIT_RUNNER_FALLBACK}）。
+
 返回 JSON（严格按契约, 同 HUNT）:
 {cls: string, findings: [{vuln_class, file, line, sink, entry_point, confidence, evidence,
   attacker_model, trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
@@ -776,6 +784,31 @@ const valid = [];
 const invalid = [];
 for (const f of findings) {
   const missing = REQUIRED_FIELDS.filter((k) => f[k] === undefined || f[k] === null || f[k] === "");
+  // schema 类型/枚举门禁（2026-08-21 恢复, 对齐 schemas/stage-finding.json 合并契约）
+  const typeIssues = [];
+  if (f.trace_result !== undefined && !["REACHABLE", "UNREACHABLE"].includes(f.trace_result)) {
+    typeIssues.push("trace_result 非 REACHABLE/UNREACHABLE");
+  }
+  if (f.reachability_basis !== undefined && !["in-tree", "export-contract", "external-context"].includes(f.reachability_basis)) {
+    typeIssues.push("reachability_basis 非法");
+  }
+  if (f.confidence !== undefined && !["low", "medium", "high"].includes(f.confidence)) {
+    typeIssues.push("confidence 非法");
+  }
+  if (f.call_chain !== undefined && !Array.isArray(f.call_chain)) typeIssues.push("call_chain 需数组");
+  if (f.defenses_checked !== undefined && !Array.isArray(f.defenses_checked)) typeIssues.push("defenses_checked 需数组");
+  if (Array.isArray(f.defenses_checked)) {
+    for (const d of f.defenses_checked) {
+      if (!d || !d.defense || !d.location || !["bypassed", "blocked", "not-present"].includes(d.verdict)) {
+        typeIssues.push("defenses_checked 项缺 defense/location/verdict 或 verdict 非法");
+        break;
+      }
+    }
+  }
+  if (missing.length === 0 && typeIssues.length) {
+    invalid.push({ finding: f, missing: typeIssues });
+    continue;
+  }
   if (missing.length === 0) {
     // 可达性条件必填（2026-08-21 TRACE 并入 HUNT）
     const traceMissing = f.trace_result === "REACHABLE"

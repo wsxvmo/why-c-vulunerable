@@ -73,7 +73,7 @@ Before running exploit, verify each hypothesis carries these HUNT trace fields a
 
 Only REACHABLE findings advance to validation. Log UNREACHABLE as killed in the casefile: `CaseUpdate(id, { status: "killed", nextStep: "unreachable: <reason>" })`.
 
-Deliberate model diversity now lives in VALIDATE: use a **different/stronger model** for `c-exploit` than the auditor, and instruct it to independently challenge the HUNT trace fields (disconfirmation-first) before writing the PoC.
+Deliberate model diversity now lives in VALIDATE: **默认所有子 agent 继承主 agent 模型**；需要更强/不同模型时经 `args.models.validate` 显式覆盖。无论模型是否覆盖，都要指示 `c-exploit` 独立挑战 HUNT trace 字段（disconfirmation-first）再写 PoC。
 
 ## 4. ADVERSARIAL VALIDATION (per traced finding, gated)
 For each REACHABLE case, spawn `subagent({agent: "c-exploit", task: "Phase 1: EXPLOIT", turnBudget: {maxTurns: 15, graceTurns: 2}})`. Run through `PromoteFinding`. If exit 0 + real impact → the case is confirmed by `PromoteFinding`. Then `CaseUpdate(id, { impact, severity })`.
