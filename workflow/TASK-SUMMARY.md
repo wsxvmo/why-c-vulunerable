@@ -44,7 +44,9 @@
 ```
 skills/workflow-audit/
 ├── SKILL.md          # 用法说明：何时用、怎么调用、阶段划分、输入输出契约
-└── audit-pipeline.js # workflow 脚本本体（永久保存，每次 read 后传入 workflow 工具）
+├── audit-pipeline.js # 段1：RECON → HUNT → GAPFIL（HUNT 产出 finding+trace）
+├── validate.js       # 段2：VALIDATE（TRACE 已并入段1 HUNT, 2026-08-21）
+└── chain-report.js   # 段3：CHAIN → REPORT → LEDGER
 ```
 
 脚本内部结构（最小骨架起，逐步扩展）：
@@ -80,11 +82,21 @@ skills/workflow-audit/
 设计收敛（多轮讨论结论，全部已落代码）：
 
 1. **消费者树/兄弟扫描整体退役**：版本漂移使"有引用=陈旧误报 / 无引用=采样空洞假阴性"双向失真，负期望价值。三脚本 consumers 引用清零，`siblings_root` 从契约移除。
-2. **导出即入口点**：新增 `audit-runner exports`（`queries/exports.sc` + 头文件交叉 → `intended/accidental/internal`）。结构规则：`kind∈{intended,accidental}` 且 `in_tree_callers==0` 的导出 → 自动注入候选池（权限类缺省审计点）；TRACE 中该 sink 默认 **REACHABLE**（`reachability_basis="export-contract"`），不再 requires_external_verify。`trace-validate.js` 的 consumersBlock → exportsBlock。
-3. **权限上下文确定性化**：新增 `audit-runner pctx`（C/守护进程信号集）——preflight 产出 `privilege_ctx`，单一事实源；RECON 引用不重推；喂 TRACE attacker_model + REPORT CVSS（AV/PR/UI）。
+2. **导出即入口点**：新增 `audit-runner exports`（`queries/exports.sc` + 头文件交叉 → `intended/accidental/internal`）。结构规则：`kind∈{intended,accidental}` 且 `in_tree_callers==0` 的导出 → 自动注入候选池（权限类缺省审计点）；HUNT 判定该 sink 默认 **REACHABLE**（`reachability_basis="export-contract"`），不再 requires_external_verify。`validate.js` 的 consumersBlock → exportsBlock。
+3. **权限上下文确定性化**：新增 `audit-runner pctx`（C/守护进程信号集）——preflight 产出 `privilege_ctx`，单一事实源；RECON 引用不重推；喂 VALIDATE attacker_model + REPORT CVSS（AV/PR/UI）。
 4. **威胁推导纪律**：RECON 产出 `threats[]`（每入口点 ≥1 threat → 映射类），`recommended_classes` 从 threats 聚合推导；`group_priority` 有"threat 价值 × pctx 权重"的确定性默认。
 
 实测：pctx 确定性（ksaf-audit-daemon=high/User=root，libsecurity1=unknown，ksaf-dynamic-uid=low）；exports 分类正确（libsecurity1 6 intended + main accidental）。
+
+## 2026-08-21 变更：auditor+tracer 合并（v3）
+
+设计收敛（auditor 与 tracer 职责高度重叠，合并以降低 token/墙钟成本，同时用 VALIDATE 补偿独立性）：
+
+1. **TRACE 阶段删除**：HUNT/GAPFIL 的每个 finding 直接产出 `trace_result/call_chain/data_flow/defenses_checked/reachability_basis`（导出契约入口默认 REACHABLE/export-contract）。
+2. **段2 改名 `validate.js`**：只对 REACHABLE finding 派 c-exploit；UNREACHABLE 进 `unreachable[]` 不验证。
+3. **独立第二视角移到 VALIDATE**：c-exploit 必须独立挑战 HUNT 的可达性判定（disconfirmation-first），再写确认 PoC；`args.models.validate` 可覆盖为更强/不同模型。
+4. **契约升级**：`schemas/stage-finding.json` 成为 finding+trace 合并契约；`gate.py` 同步；`tracer.md`/`stage-trace.json` 标 ARCHIVED 保留（补丁重攻击/legacy）。
+5. **全通纪律平移**：导出契约入口默认存在消费者（可能高权限中介）的规则从 TRACE 平移到 HUNT 判定与 VALIDATE 否证，语义不变。
 
 ## 验收标准
 

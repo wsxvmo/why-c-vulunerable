@@ -1,6 +1,8 @@
 // skills/workflow-audit/audit-pipeline.js — 段1: RECON → HUNT → GAPFIL
 // ============================================================================
 // DSH workflow 无主-agent 审计流水线 · 段1（无 fs 调度脚本，纯编排）
+// 2026-08-21: TRACE 已并入 HUNT —— HUNT/GAPFIL 每个 finding 直接产出
+//   trace_result/call_chain/data_flow/defenses_checked/reachability_basis。
 //
 // 调用方式（主 agent 每次 read 本文件后作为 script 参数传入）:
 //   workflow({
@@ -240,7 +242,9 @@ const RECON_SCHEMA = {
 
 const FINDING_ITEM_SCHEMA = {
   type: "object",
-  required: ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence"],
+  required: ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence",
+             "attacker_model", "trace_result", "call_chain", "data_flow", "defenses_checked",
+             "reachability_basis"],
   properties: {
     vuln_class: { type: "string" },
     file: { type: "string" },
@@ -251,6 +255,24 @@ const FINDING_ITEM_SCHEMA = {
     evidence: { type: "string" },
     subsystem: { type: "string" },
     attacker_model: { type: "string" },
+    trace_result: { type: "string", enum: ["REACHABLE", "UNREACHABLE"] },
+    call_chain: { type: "array", items: { type: "string" } },
+    data_flow: { type: "string" },
+    defenses_checked: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["defense", "location", "verdict"],
+        properties: {
+          defense: { type: "string" },
+          location: { type: "string" },
+          verdict: { type: "string", enum: ["bypassed", "blocked", "not-present"] },
+        },
+      },
+    },
+    reachability_basis: { type: "string", enum: ["in-tree", "export-contract", "external-context"] },
+    impact_if_reachable: { type: "string" },
+    unreachable_reason: { type: "string" },
   },
 };
 
@@ -266,7 +288,10 @@ const HUNT_SCHEMA = {
   },
 };
 
-const REQUIRED_FIELDS = ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence"];
+// 2026-08-21: TRACE 并入 HUNT — finding 必含结构化可达性 trace 字段
+const REQUIRED_FIELDS = ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence",
+                         "attacker_model", "trace_result", "call_chain", "data_flow", "defenses_checked",
+                         "reachability_basis"];
 
 // ============================================================================
 // Phase 1: RECON — 1 个 agent
@@ -476,6 +501,22 @@ for (const e of (reconExports)) {
 if (exportEntries.length) {
   log(`导出即入口点: ${exportEntries.length} 个生产导出文件（去重后, 排除 tests/autotests）自动注入候选池`);
 }
+// HUNT 提示词注入块: 组文件命中的导出契约条目 + 全通语义（2026-08-21 TRACE 并入 HUNT 后,
+// 可达性判定在 HUNT 完成, 必须把"导出即入口点默认 REACHABLE"规则传给 auditor）
+function exportBlockForHunt(g) {
+  const rel = g && g.file ? g.file : "";
+  const hits = exportEntries.filter((e) => e.file === rel);
+  const lines = [];
+  if (hits.length) {
+    lines.push(`\n## 本组导出契约入口（RECON 产出, 导出即入口点）\n${hits.map((e) => `- ${e.symbol} @ ${e.file}:${e.line} (kind=${e.kind})`).join("\n")}\n这些符号无树内调用方, 属"设计承诺的外部调用面": **默认 REACHABLE**, reachability_basis=export-contract。`);
+  } else if (exportEntries.length) {
+    lines.push(`\n## 导出契约提示（RECON 产出）\n本组无导出契约入口; 若 sink 对应符号出现在全局导出面中, 按 export-contract 规则判定（默认存在消费者, 可能高权限中介）。`);
+  }
+  if (exportEntries.length) {
+    lines.push(`**全通语义（2026-08-18）**: 导出契约入口默认存在消费者, 且消费者可能是高权限中介（root 守护进程转发非特权请求）。不得以"无消费者/非特权直连/文件权限门/no-gain"判不可达或降级 attacker_model。`);
+  }
+  return lines.join("\n");
+}
 for (const cls of effectiveClasses) {
   if (candPool.some((c) => c.class === cls)) continue; // 已有候选, 不重复注入
   for (const ee of exportEntries) {
@@ -612,6 +653,7 @@ CPG: ${recon.cpg_path}
 ${discipline}
 ${forkBlock}
 ${exclusionBlock}
+${exportBlockForHunt(g)}
 
 本任务:
 1. **引擎结果直接用 RECON 候选池, 不重跑资产**: RECON 已对每个类跑过预写资产
@@ -622,13 +664,25 @@ ${exclusionBlock}
    **验证视角**: 不止看"内存是否有界"（无 OOB ≠ 无 bug）, 还要看**写出的值语义是否正确**
    （字符串处理逻辑: 子串误匹配? 索引不同步导致截断/空洞? 边界输入是否破坏数据结构?）;
    无候选点的类(权限类)按入口点审计"缺什么"(授权原语/身份校验/属主检查); 解释型文件(sh/py)整文件审计;
-3. 只输出有证据链的 finding（vuln_class 必须填实际类, 不是组标识）; 每个候选点/入口点的检查结果记入 checked;
+3. **可达性判定是 HUNT 职责（2026-08-21 TRACE 并入 HUNT）**: 对每个 emitted finding,
+   必须产出结构化 trace 字段 —— 逐跳验证后判定 trace_result:
+   - sink 是导出契约入口（上方 exportBlock 命中, kind∈{intended,accidental} 且树内无调用方）→
+     **默认 REACHABLE**, reachability_basis="export-contract";
+   - 树内路径逐跳证实 → REACHABLE, reachability_basis="in-tree";
+   - 整条链被真实防御阻断（不可绕过）→ 不 emit 该 finding（记入 checked）, 或 emit
+     UNREACHABLE + unreachable_reason（审计留痕, 段2 不会验证）;
+   - REACHABLE 必填 impact_if_reachable; UNREACHABLE 必填 unreachable_reason。
+4. 只输出有证据链的 finding（vuln_class 必须填实际类, 不是组标识）; 每个候选点/入口点的检查结果记入 checked;
    查不完的记入 unchecked 交回（自限: 单 agent 最多查 3 个入口点, 超出列入 unchecked）;
-4. 把 findings.json + 证据片段写到 ${runDir}/hunt/<组名>/。
+5. 把 findings.json + 证据片段写到 ${runDir}/hunt/<组名>/。
 
 返回 JSON（严格按契约）:
 {cls: "<组标识: ${g.file}>", findings: [{vuln_class, file, line(整数), sink, entry_point,
-  confidence: low|medium|high, evidence(entry→sink 一句话+代码片段), subsystem?, attacker_model?}],
+  confidence: low|medium|high, evidence(entry→sink 一句话+代码片段), subsystem?, attacker_model,
+  trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
+  defenses_checked: [{defense, location, verdict: bypassed|blocked|not-present}],
+  reachability_basis: in-tree|export-contract|external-context,
+  impact_if_reachable?, unreachable_reason?}],
  checked: string[], unchecked: string[], notes?: string}`,
       { label: `hunt:${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}`, phase: "hunt", schema: HUNT_SCHEMA, ...(MODELS.hunt ? { model: MODELS.hunt } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) })
   ));
@@ -666,13 +720,21 @@ CPG: ${recon.cpg_path}
 ${discipline}
 ${forkBlock}
 ${exclusionBlock}
+${exportBlockForHunt(g)}
 
 上一轮覆盖情况（组 ${r.cls}）:
 - 已检查（勿重复）: ${JSON.stringify(r.checked || [])}
 - 未检查（逐一检查）: ${JSON.stringify(r.unchecked || [])}
 
+可达性判定同 HUNT（2026-08-21 TRACE 并入 HUNT）: 每个 emitted finding 必含
+trace_result/call_chain/data_flow/defenses_checked/reachability_basis; REACHABLE 必填
+impact_if_reachable, UNREACHABLE 必填 unreachable_reason; 导出契约入口默认 REACHABLE。
+
 返回 JSON（严格按契约, 同 HUNT）:
-{cls: string, findings: [...], checked: string[], unchecked: string[], notes?: string}`,
+{cls: string, findings: [{vuln_class, file, line, sink, entry_point, confidence, evidence,
+  attacker_model, trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
+  defenses_checked: [{defense, location, verdict}], reachability_basis, impact_if_reachable?,
+  unreachable_reason?}], checked: string[], unchecked: string[], notes?: string}`,
       { label: `gapfill:${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}`, phase: "gapfill", schema: HUNT_SCHEMA, ...(MODELS.gapfil ? { model: MODELS.gapfil } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) });
   }));
   results = results.map((old) => {
@@ -715,6 +777,16 @@ const invalid = [];
 for (const f of findings) {
   const missing = REQUIRED_FIELDS.filter((k) => f[k] === undefined || f[k] === null || f[k] === "");
   if (missing.length === 0) {
+    // 可达性条件必填（2026-08-21 TRACE 并入 HUNT）
+    const traceMissing = f.trace_result === "REACHABLE"
+      ? (f.impact_if_reachable ? [] : ["impact_if_reachable"])
+      : f.trace_result === "UNREACHABLE"
+        ? (f.unreachable_reason ? [] : ["unreachable_reason"])
+        : ["trace_result(非 REACHABLE/UNREACHABLE)"];
+    if (traceMissing.length) {
+      invalid.push({ finding: f, missing: traceMissing });
+      continue;
+    }
     // 规范化 line 为整数（模型偶发返回字符串）
     const line = Number(f.line);
     if (Number.isInteger(line) && line >= 1) {
@@ -788,6 +860,16 @@ for (const f of valid) {
     if ((f.evidence || "").length > (dup.evidence || "").length) dup.evidence = f.evidence;
     if (f.confidence === "high") dup.confidence = "high";
     if (f.attacker_model && !dup.attacker_model) dup.attacker_model = f.attacker_model;
+    // 2026-08-21 TRACE 并入 HUNT: 同根因冲突时优先保留 REACHABLE 的 trace 字段
+    if (dup.trace_result !== "REACHABLE" && f.trace_result === "REACHABLE") {
+      dup.trace_result = f.trace_result;
+      dup.call_chain = f.call_chain;
+      dup.data_flow = f.data_flow;
+      dup.defenses_checked = f.defenses_checked;
+      dup.reachability_basis = f.reachability_basis;
+      dup.impact_if_reachable = f.impact_if_reachable;
+      dup.unreachable_reason = f.unreachable_reason;
+    }
   }
 }
 const mergedCount = valid.length - dedupedFindings.length;
@@ -812,7 +894,7 @@ return {
   },
   // 文件聚合组明细（2026-08-15 改造）: 组 = 文件, 含类清单/候选点/入口行/状态
   groups: groupsMeta,
-  // 经验前馈注入块 — 段2 TRACE 提示词需要, 调用方转发给 trace-validate.js 的 args.tricks_injection
+  // 经验前馈注入块 — 段2 VALIDATE 提示词需要, 调用方转发给 validate.js 的 args.tricks_injection
   tricks_injection: recon.tricks_injection || "",
   // 目标本地导出面（RECON step 3 产出）— 段2 的"导出即入口点"判定输入
   exports: reconExports,

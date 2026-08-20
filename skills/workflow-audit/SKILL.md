@@ -1,13 +1,13 @@
 ---
 name: workflow-audit
-description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH workflow tool. Use for full-pipeline audits (RECON→HUNT→GAPFIL→TRACE→VALIDATE→CHAIN→REPORT) that must NOT hold a long-lived coordinator session — the script audit-pipeline.js is read from disk and passed as the workflow script parameter each call, every stage runs as a fresh workflow subagent, and the caller only holds compact JSON between segments. RECON is fully target-local: privilege context (pctx) and export surface (exports) come from deterministic CLIs, threat modeling is a compact threats[] discipline, and the consumer-tree/sibling scan is retired (export = entry point). Keeps all audit discipline (audit-runner/audit-tools enforcement, schema gates, sanitizer confirmation) while eliminating the coordinator's session-longevity token tax.
+description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH workflow tool. Use for full-pipeline audits (RECON→HUNT→GAPFIL→VALIDATE→CHAIN→REPORT; TRACE merged into HUNT, 2026-08-21) that must NOT hold a long-lived coordinator session — the script audit-pipeline.js is read from disk and passed as the workflow script parameter each call, every stage runs as a fresh workflow subagent, and the caller only holds compact JSON between segments. RECON is fully target-local: privilege context (pctx) and export surface (exports) come from deterministic CLIs, threat modeling is a compact threats[] discipline, and the consumer-tree/sibling scan is retired (export = entry point). Keeps all audit discipline (audit-runner/audit-tools enforcement, schema gates, sanitizer confirmation) while eliminating the coordinator's session-longevity token tax.
 ---
 
 # workflow-audit — DSH workflow 无主-agent 审计流水线
 
 ## 何时用 / 何时不用
 
-**用**：对完整目标跑全流水线审计（RECON→HUNT→GAPFIL→TRACE→VALIDATE→CHAIN→REPORT）。主 agent 只发一次 `workflow` 调用、只持有紧凑 JSON 中间产物；各阶段在**新鲜上下文的子 agent** 中执行，不共享会话历史。
+**用**：对完整目标跑全流水线审计（RECON→HUNT→GAPFIL→VALIDATE→CHAIN→REPORT；TRACE 已并入 HUNT）。主 agent 只发一次 `workflow` 调用、只持有紧凑 JSON 中间产物；各阶段在**新鲜上下文的子 agent** 中执行，不共享会话历史。
 
 **不用**：单文件/单函数快速判断（直接 read/grep 或普通 subagent 即可）；两三个 agent 能解决的小任务（workflow 是重编排工具）。
 
@@ -18,10 +18,10 @@ description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH
 ## 三段式（每段 = 一次 workflow 调用）
 
 ```
-段1 workflow: RECON → HUNT → GAPFIL          ← audit-pipeline.js（v1 已实现）
+段1 workflow: RECON → HUNT → GAPFIL          ← audit-pipeline.js（v1 已实现; HUNT 产出 finding+trace）
      ↓ return {findings[], coverage}          ← 主 agent 过目/干预点
-段2 workflow: TRACE → VALIDATE               ← trace-validate.js（v2 已实现）
-     ↓ return {confirmed[], killed[]}
+段2 workflow: VALIDATE                       ← validate.js（v3 已实现; TRACE 已并入段1 HUNT）
+     ↓ return {confirmed[], killed[], env_blocked[], unreachable[]}
 段3 workflow: CHAIN → REPORT → LEDGER        ← chain-report.js（v2 已实现）
      ↓ return {report, ledger}               ← 最终交付 + casefile 台账
 ```
@@ -35,10 +35,9 @@ workflow 的 `agent(prompt, {model})` 支持 per-agent 模型覆盖（plain suba
 | 阶段 | 默认模型 | 理由 |
 |---|---|---|
 | RECON | **继承主 agent**（`args.models.recon` 可覆盖） | 与主 agent 同模型 |
-| HUNT | **继承主 agent**（`args.models.hunt` 可覆盖） | 与主 agent 同模型，广撒网 |
+| HUNT | **继承主 agent**（`args.models.hunt` 可覆盖） | 与主 agent 同模型，广撒网 + 可达性证明 |
 | GAPFIL | **继承主 agent**（`args.models.gapfil` 可覆盖） | 与主 agent 同模型 |
-| TRACE | **继承主 agent**（`args.models.trace` 可覆盖） | 与主 agent 同模型，逐跳验证 |
-| VALIDATE | **继承主 agent**（`args.models.validate` 可覆盖） | 与主 agent 同模型，否证优先 |
+| VALIDATE | **继承主 agent**（`args.models.validate` 可覆盖） | 与主 agent 同模型；**可覆盖为更强/不同模型**，独立否定 HUNT 的可达性判定（deliberate disagreement） |
 | CHAIN/REPORT | **继承主 agent**（`args.models.chain/report` 可覆盖） | 与主 agent 同模型，轻量分析 |
 
 ## 审计启动前置（主 agent 每次跑审计前必做）
@@ -75,7 +74,7 @@ audit-runner pctx --root <target> --out <runDir>/recon/privilege_ctx.json
 → 主 agent 把产物作为段1 `args.privilege_ctx` 传入；RECON **不重新推导**（直接 read 引用）。
 信号集 C/守护进程导向（setuid/systemd User=root/特权 API/daemon 化/低端口绑定等），
 输出 `privilege_context(high|low|unknown)` + `trigger_context` + `signals[]` + `evidence_confidence`。
-pctx 是权限上下文的**单一事实源**：段2 TRACE 用它喂 attacker_model，段3 REPORT 用它推导 CVSS 的 AV/PR/UI。
+pctx 是权限上下文的**单一事实源**：段2 VALIDATE 用它喂 attacker_model，段3 REPORT 用它推导 CVSS 的 AV/PR/UI。
 
 ## 调用方式（段1）
 
@@ -108,7 +107,7 @@ pctx 是权限上下文的**单一事实源**：段2 TRACE 用它喂 attacker_mo
 | `skillRoot` | 可选 | 本仓库根；默认 `/home/xvmo/why-c-vulunerable` |
 | `classes` | 已废除 | **2026-08-15 起不再生效**（类选择仅听从 RECON `recommended_classes`）；传入会被忽略并打警告。禁止再通过 `classes`/`classesMode` 追加或覆盖猎杀类 |
 | `privilege_ctx` | 段1 可选 | **preflight `audit-runner pctx` 确定性产出**（权限上下文单一事实源）；RECON 引用不重推。段2/段3 亦转发 |
-| `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn） |
+| `findings` | 段2 必填 | 段1 返回的 `findings[]`（脚本自动分配 id F1..Fn；**每项含 HUNT 产出的可达性 trace 字段**） |
 | `exports` | 段2 可选 | 段1 返回的 `exports[]`（目标本地导出面，导出即入口点） |
 | `threats` | 段2 可选 | 段1 返回的 `threats[]`（威胁推导纪律） |
 | `cpg_path` | 段2 必填 | 段1 recon 构建的 CPG 路径 |
@@ -116,26 +115,30 @@ pctx 是权限上下文的**单一事实源**：段2 TRACE 用它喂 attacker_mo
 | `confirmed` | 段3 必填 | 段2 返回的 `confirmed[]` |
 | `coverage` | 段3 可选 | 段1 返回的 `coverage[]`，补进报告 |
 | `external_context` | 段2/段3 可选 | 审计员显式提供的生态知识（非扫描；**默认"消费者树全通"已让导出 API 默认可达**，此字段用于校准 PR、确认具体消费者身份与跨包链；缺省无，但全通默认仍然生效） |
-| `models` | 可选 | `{hunt?, trace?, validate?, chain?, report?}` 模型覆盖 |
+| `models` | 可选 | `{hunt?, gapfil?, validate?, chain?, report?}` 模型覆盖（TRACE 已并入 HUNT，不再有 `trace`） |
 
 > **已退役（2026-08-16）**：`siblings_root` / 兄弟组件扫描 / 消费者树——版本漂移使"有引用(陈旧误报)/无引用(采样空洞假阴性)"双向失真，负期望价值。导出 API 本身即"设计承诺的外部调用面"（intended/accidental 均可达），由结构性规则"导出即入口点"处理，无需扫描其他组件。
 
 ### 段2/段3 追加契约
 
+> **2026-08-21：TRACE 已并入段1 HUNT** —— HUNT/GAPFIL 的每个 finding 直接携带
+> `trace_result: REACHABLE\|UNREACHABLE`、`call_chain[]`、`data_flow`、`defenses_checked[]`、
+> `attacker_model`、`reachability_basis: in-tree\|export-contract\|external-context`，
+> 以及条件必填 `impact_if_reachable?` / `unreachable_reason?`。段2 不再派 c-tracer。
+
 | 阶段 | 形态 | agent 数 | 输出 |
 |---|---|---|---|
-| TRACE | parallel, 每 finding 1 个（KILL 税前置内置） | ≤6 并发 | 每 finding `{finding_id, trace_result: REACHABLE\|UNREACHABLE\|KILLED, entry_point, call_chain[], data_flow, defenses_checked[], attacker_model, impact_if_reachable?, unreachable_reason?, reachability_basis?: in-tree\|export-contract\|external-context, kill_reason?}` |
-| VALIDATE | parallel, 每 REACHABLE finding 1 个（否证优先 + sanitizer） | ≤6 并发 | 每 finding `{finding_id, status: confirmed\|killed\|env_blocked, technique_used, detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?, kill_reason?, kill_category?}` |
+| VALIDATE | parallel, 每 REACHABLE finding 1 个（独立否证 + sanitizer） | ≤6 并发 | 每 finding `{finding_id, status: confirmed\|killed\|env_blocked, technique_used, detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?, kill_reason?, kill_category?}` |
 | CHAIN | 1 个 agent（仅 confirmed>0 时；默认树内链 + 导出契约链步，跨包链在有 `external_context` 时细化） | 1 | `{chains[], summary}` |
 | REPORT | confirmed>0 时 1 个 report agent 补 CVSS；否则纯脚本聚合 | 0-1 | `{findings[], summary}` |
 
 **脚本内条件门禁**（段2）：confirmed → poc_path/run_log/evidence_extracted 必填；killed → kill_reason 必填，且 **export-contract 的 kill 不得命中全通禁止类别**（无消费者/非特权直连/文件权限门/no-gain，命中则 repair ≤2 重派）；env_blocked → kill_reason(阻断原因) 必填；不合格 repair ≤2 次重派。
 
-**段2 返回契约**：`confirmed[]`（每项含完整 finding+trace+validation）、`killed[]`（VALIDATE 级 kill）、`env_blocked[]`（环境/内核/部署无法本地复现，**≠ 硬 kill**，供段3/人工/LIVE 确认，2026-08-18 新增）、`killed_by_gate[]`（TRACE 级 KILL 税拦截，含完整 trace 对象）、`gate`、`stats`、`agents`。finding 与 trace 按序绑定（pair），finding_id 偏差有 positional 兜底，不会丢 finding 字段。
+**段2 返回契约**：`confirmed[]`（每项含完整 finding（含 HUNT trace 字段）+validation）、`killed[]`（VALIDATE 级 kill）、`env_blocked[]`（环境/内核/部署无法本地复现，**≠ 硬 kill**，供段3/人工/LIVE 确认，2026-08-18 新增）、`unreachable[]`（HUNT 判 UNREACHABLE 的 finding，段2 不验证，审计留痕；2026-08-21 替代原 `killed_by_gate[]`）、`gate`、`stats`、`agents`。finding_id 偏差有 positional 兜底，不会丢 finding 字段。
 
 **段1 去重（C）**：同一 `file+sink`（行距 ≤10）的跨类同根因 finding 合并为一条（保留证据最全/置信度最高者，`cls_all` 记录全部来源类），防段2 重复 trace/validate。
 
-**可达性规则（2026-08-16，替代消费者树）**：sink 是导出符号（kind∈{intended,accidental}）且 `in_tree_callers==0` → **默认 REACHABLE**（`reachability_basis="export-contract"`），不再 requires_external_verify；树内路径证实 → `"in-tree"`；审计员显式生态知识 → `"external-context"`。TRACE/VALIDATE 不得重扫兄弟组件（具体外部调用路径属 PoC 阶段）。
+**可达性规则（2026-08-16，替代消费者树；2026-08-21 起由 HUNT 产出）**：sink 是导出符号（kind∈{intended,accidental}）且 `in_tree_callers==0` → **默认 REACHABLE**（`reachability_basis="export-contract"`），不再 requires_external_verify；树内路径证实 → `"in-tree"`；审计员显式生态知识 → `"external-context"`。HUNT/VALIDATE 不得重扫兄弟组件（具体外部调用路径属 PoC 阶段）。
 
 **全通纪律（2026-08-18，修正与"默认消费者树全通"相悖的设计点）**："导出即入口点 → 默认 REACHABLE"即**默认消费者树全通**——导出契约入口默认存在消费者，且消费者可能是高权限中介（root 守护进程转发非特权请求）。据此纪律从"只标 REACHABLE"延伸到整条流水线：
 
@@ -145,7 +148,7 @@ pctx 是权限上下文的**单一事实源**：段2 TRACE 用它喂 attacker_mo
 4. **REPORT 的 PR 不得因 pctx=unknown 保守取 H**：export-contract finding 在 pctx=unknown 时取 PR:L（导出面默认可达）或 PR:N/A（待外部消费者知识），pctx=unknown 只是"目标自身无固定运行权限"，不是"无消费者"证据。
 5. **导出回填覆盖全部推荐类**（2.0b 改造）：`exports[]` 缺省审计点不再限于权限类——注入/内存/健壮性类同样以导出 API 面为缺省审计点（F3 实证：NULL 参数属 null-deref 类，未推荐→导出 API 健壮性面盲区）。
 6. **CHAIN 默认含导出契约链步**：export-contract 的 confirmed finding 其"外部消费路径"作为假设链步纳入（标注待 LIVE 确认），不因缺 external_context 整条丢弃。
-7. **全通语义结构化传递**：`exportsBlock` 内置"默认存在消费者（可能高权限中介）"，注入 TRACE **与 VALIDATE** 提示词；attacker_model 不得回退为"需要 out-of-tree 特权消费者"。
+7. **全通语义结构化传递**：`exportsBlock` 内置"默认存在消费者（可能高权限中介）"，注入 HUNT **与 VALIDATE** 提示词；attacker_model 不得回退为"需要 out-of-tree 特权消费者"。
 
 **段3 LEDGER（B 收尾落账）**：末尾 1 个 agent 把最终 confirmed+coverage 一次性写入 casefile 台账（`runDir` 下：init → add 每 case（`audit-runner ledger --op add --dedup-key` 自动去重）→ log 证据 → `casefile.py report --out runDir/report/casefile-report.md`）。不做全程状态机——编号收尾一次性分配，无跨段接力链。返回 `ledger: {casefile_initialized, report_path, case_ids}`。casefile 的"状态机约束 agent"职责在无主 agent 模型下已由脚本门禁接管（见上），台账保留"记录+索引+人工时间线"价值。
 
@@ -154,17 +157,17 @@ pctx 是权限上下文的**单一事实源**：段2 TRACE 用它喂 attacker_mo
 | 阶段 | 形态 | agent 数 | 输出 |
 |---|---|---|---|
 | RECON | 1 个 agent（确定性底座: doctor + cpg build + **pctx** + **exports** + 候选池） | 1 | `{languages, entry_points[], cpg_path, toolchain, assumptions[], privilege_ctx, exports[], threats[], recommended_classes[], tricks_injection, exclude_files[], candidate_hits[], class_file_map[], group_priority[]}` + `runDir/recon/recon.json` |
-| HUNT | **文件聚合组, 每文件组 1 个**, ≤6 并发/轮分批 | ≤6/轮 | 每组 `{cls: 组标识, findings[], checked[], unchecked[], notes?}` + `runDir/hunt/<组>/` |
+| HUNT | **文件聚合组, 每文件组 1 个**, ≤6 并发/轮分批 | ≤6/轮 | 每组 `{cls: 组标识, findings[], checked[], unchecked[], notes?}` + `runDir/hunt/<组>/`；**findings 含可达性 trace 字段** |
 | GAPFIL | 对 INCOMPLETE 组补查 1 轮, 同分组规则 | ≤6 并发 | 同上（替换原结果） |
 
 ### 经验前馈（tricks 注入, 原框架硬规则）
 
-RECON 按目标类型从 `skills/tricks/SKILL.md` 选 2-4 个相关章节（守护进程/DBus → §2 身份信任边界+§4 深挖；库目标 → §5 差分索引；setuid → §1 攻击面优先级），提炼 ≤200 字可操作注入块 → `tricks_injection`，脚本**前置到每个 HUNT/GAPFIL auditor 提示词**，并经段1 返回值转发给段2（`args.tricks_injection`）注入每个 TRACE 提示词。这是"历史复盘经验进入本轮审计"的通道（libsecurity1 那次 RECON 即兴生成该字段但编排层未转发的缺口已补上）。
+RECON 按目标类型从 `skills/tricks/SKILL.md` 选 2-4 个相关章节（守护进程/DBus → §2 身份信任边界+§4 深挖；库目标 → §5 差分索引；setuid → §1 攻击面优先级），提炼 ≤200 字可操作注入块 → `tricks_injection`，脚本**前置到每个 HUNT/GAPFIL auditor 提示词**，并经段1 返回值转发给段2（`args.tricks_injection`）注入每个 VALIDATE 提示词。这是"历史复盘经验进入本轮审计"的通道（libsecurity1 那次 RECON 即兴生成该字段但编排层未转发的缺口已补上）。
 
 ### 技能加载分层（audit-runner/audit-tools）
 
 - **RECON**：read `audit-runner/SKILL.md` 与 `audit-tools/SKILL.md` **全量一次**（跑 doctor/建 CPG/生命周期与 fork 策略，一次值回票价）。
-- **执行 agent（HUNT/GAPFIL/TRACE/VALIDATE）**：只带脚本内置纪律块（禁裸 joern/println/降级/干净 cwd/工具分工），**不重读全量 SKILL.md**（内容重叠+稀释注意力）；遇到纪律块未覆盖的边界情况时条件引用（如 CPG 并发排队 → read `audit-runner/SKILL.md` §并发策略）。
+- **执行 agent（HUNT/GAPFIL/VALIDATE）**：只带脚本内置纪律块（禁裸 joern/println/降级/干净 cwd/工具分工），**不重读全量 SKILL.md**（内容重叠+稀释注意力）；遇到纪律块未覆盖的边界情况时条件引用（如 CPG 并发排队 → read `audit-runner/SKILL.md` §并发策略）。
 - **待办**：CPG fork 优化——RECON 产出 `fork_paths[]`（每并发 agent 一份私有 CPG 副本），脚本分配给各 auditor，替代共享 CPG + flock 串行。
 
 ### 类选择机制（RECON 唯一权威 + 威胁推导纪律 — 2026-08-16）
@@ -193,7 +196,7 @@ RECON 按目标类型从 `skills/tricks/SKILL.md` 选 2-4 个相关章节（守�
 5. **覆盖单位 = (class × file) 组**：COVERED / INCOMPLETE（→GAPFIL 同组补查）/ SKIPPED / NOT_FOUND；返回 `groups[]` 明细（组状态 + 类清单 + 候选点行号）。
 6. **防大组爆炸**：组内唯一行 > 60 → 按类拆成 (file×class) 子组（兜底，非默认）。
 
-**finding 必填字段**（与 `schemas/stage-finding.json` 对齐）：`vuln_class, file, line(整数), sink, entry_point, confidence(low|medium|high), evidence(entry→sink)`。
+**finding 必填字段**（与 `schemas/stage-finding.json` 合并契约对齐，2026-08-21）：`vuln_class, file, line(整数), sink, entry_point, confidence(low|medium|high), evidence(entry→sink), attacker_model, trace_result(REACHABLE|UNREACHABLE), call_chain[], data_flow, defenses_checked[], reachability_basis(in-tree|export-contract|external-context)`；条件必填 `impact_if_reachable`（REACHABLE）/ `unreachable_reason`（UNREACHABLE）。
 
 **脚本内门禁**：`agent()` schema 只校验子集（type/properties/required/items/enum），深度校验（字段缺失、line 非整数、条件必填）在脚本聚合段做，不合格的 finding 列入 `gate.invalid` 返回，不静默丢弃。
 
@@ -238,6 +241,7 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 - [x] **exports 导出面枚举**（2026-08-16）：libsecurity1-clean 新鲜 CPG 实测 7 行（6 intended 公开 API + main accidental），intended/accidental 分类正确 ✅
 - [x] **消费者树/兄弟扫描退役**（2026-08-16）：三脚本 consumers 引用清零，`siblings_root` 从契约移除 ✅
 - [x] **全通纪律落地**（2026-08-18）：VALIDATE 禁调用者身份 kill 前置 + kill_reason 全通门禁 + env_blocked 独立状态 + REPORT 全通 PR + 导出回填全类 + CHAIN 导出契约链步；三脚本 `node --check` 通过 ✅
+- [x] **auditor+tracer 合并**（2026-08-21）：HUNT 产出 finding+trace 合并契约；段2 改名 validate.js（TRACE 阶段删除）；VALIDATE 独立可达性挑战；`stage-finding.json`/gate.py 同步；`tracer.md`/`stage-trace.json` 标 ARCHIVED；三脚本 `node --check` 通过 ✅
 - [ ] **casefile/ledger 对接**：确定性 CLI（ledger add/log）由 agent 调用，待接入
 - [ ] **段1 冒烟复跑（新 RECON 双层）**：ksaf-dynamic-uid 用 pctx+exports+threats 契约重跑，gate 0 无效，token 对比更新
 
@@ -291,7 +295,7 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 10. **finding id 生命周期分裂**（段1 无 id, 段2 才分配 F1..Fn）→ 契约: id 由段2 分配, 段2 索引是 id 唯一持有者, 段3 用 finding_id 关联。
 
 ### 四、判断重复/盲区类（纪律）
-11. **树外 D-Bus 面被多 agent 独立确认（2026-08-15）** → 当时定为 RECON consumers[] 唯一事实源；**2026-08-16 起消费者树/兄弟扫描整体退役**（版本漂移双向失真），替代为确定性 `exports[]` + 结构性规则"导出即入口点"（export-contract → 默认 REACHABLE）。TRACE/VALIDATE 一律不重查树外。
+11. **树外 D-Bus 面被多 agent 独立确认（2026-08-15）** → 当时定为 RECON consumers[] 唯一事实源；**2026-08-16 起消费者树/兄弟扫描整体退役**（版本漂移双向失真），替代为确定性 `exports[]` + 结构性规则"导出即入口点"（export-contract → 默认 REACHABLE）。HUNT/VALIDATE 一律不重查树外。
 12. **"有界"误判为"无 bug"**（remove 循环 j<=i<=63 no OOB → NOT_FOUND, 漏了值语义损坏）→ HUNT 验证视角已加"写出的值语义是否正确"(子串误匹配/索引不同步/数据结构破坏)。
 13. **兄弟组件版本漂移（2026-08-16 新增）**：兄弟包引用目标 API 时可能已是旧契约 → "有引用"=陈旧误报、"无引用"=采样空洞假阴性，双向失真 → 不再以兄弟扫描做可达性依据；导出即入口点由目标本地 `exports[]` 决定。
 
@@ -302,8 +306,8 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 - **v2（完成）**：段2（TRACE+VALIDATE，KILL 税前置 + 否证优先 + 条件门禁）+ 段3（CHAIN+REPORT，CVSS 富化）+ model 分层（trace/validate=pro, hunt/chain/report=flash）。端到端验证（ksaf-init 纯净源码）见 `workspace/runs/ksaf-init-clean-2025-08-15/E2E-SUMMARY.md`。独立会话在 libsecurity1 上复现历史漏洞（CWE-78 注入 + CWE-476 NULL 解引用，均真实 repro 确认）。
 - **v2.2（完成，2026-08-16）**：RECON 全面目标本地化——
   - **消费者树/兄弟扫描退役**：三脚本 consumers 清零，`siblings_root` 移除；
-  - **导出即入口点**：`exports` CLI（exports.sc + 头文件交叉 → intended/accidental/internal）+ 结构性规则（无树内调用方的导出默认 REACHABLE，`reachability_basis` 标注），trace-validate 的 consumersBlock → exportsBlock；
-  - **权限上下文确定性化**：`pctx` CLI（C/守护进程信号集）preflight 产出 `privilege_ctx`，单一事实源，喂 TRACE attacker_model 与 REPORT CVSS；
+  - **导出即入口点**：`exports` CLI（exports.sc + 头文件交叉 → intended/accidental/internal）+ 结构性规则（无树内调用方的导出默认 REACHABLE，`reachability_basis` 标注），validate.js 的 consumersBlock → exportsBlock；
+  - **权限上下文确定性化**：`pctx` CLI（C/守护进程信号集）preflight 产出 `privilege_ctx`，单一事实源，喂 VALIDATE attacker_model 与 REPORT CVSS；
   - **威胁推导纪律**：RECON 产出 `threats[]`（每入口点 ≥1 threat → 映射类），`recommended_classes` 从 threats 聚合推导；
   - 已实测：pctx 确定性（ksaf-audit-daemon=high / libsecurity1=unknown）；exports 分类正确（libsecurity1 6 intended + main accidental）。
 - **v2.3（完成，2026-08-18）**：**全通纪律落地**——修正与"默认消费者树全通"相悖的 7 处设计（libsecurity1-pure 复盘）：
@@ -313,7 +317,13 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
   - REPORT 全通 PR 规则（pctx=unknown 的导出 API 不保守取 H）；
   - 导出回填扩展到全部推荐类（2.0b 改造，F3 实证：null-deref 未推荐→导出 API 健壮性面盲区）；
   - CHAIN 默认含导出契约链步；
-  - exportsBlock 全通语义结构化传给 TRACE+VALIDATE。
+  - exportsBlock 全通语义结构化传给 HUNT+VALIDATE。
+- **v3（完成，2026-08-21）**：**auditor+tracer 合并**——
+  - HUNT/GAPFIL 每个 finding 直接产出可达性 trace 字段（trace_result/call_chain/data_flow/defenses_checked/reachability_basis），TRACE 阶段删除；
+  - 段2 改名 `validate.js`：只对 REACHABLE finding 派 c-exploit；UNREACHABLE 进 `unreachable[]`；
+  - VALIDATE 增加"独立可达性挑战"（不盲信 HUNT trace，先独立否证再 PoC），补偿合并丢失的第二视角；
+  - `schemas/stage-finding.json` 升级为 finding+trace 合并契约；`gate.py` 同步；`tracer.md`/`stage-trace.json` 标 ARCHIVED；
+  - 全通纪律从 TRACE 平移至 HUNT 判定（导出契约入口默认 REACHABLE 仍成立）。
 - **类空间（已补全 25 键）**：`CLASS_SECTIONS` 覆盖 schema 枚举全部类（除 other）——内存安全 8 + 注入/路径 5（含 shell-injection）+ 权限 4（含 spoofable-identity）+ Python 2（eval-injection/unsafe-deserialization）+ 交叉 5（toctou/race-condition/memory-leak/resource-leak/crypto-weakness/info-disclosure）。RECON 按目标实际适用性从中选 ≥3 类；**不要再传 `classes: [全部键]`**（已废除）。
 - **待办**：
   1. VALIDATE sanitizer 分支已在 libsecurity1 验证（F1/F2/F3 均 sanitizer/repro 确认）✅
@@ -324,10 +334,10 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
 
 | 项 | 路径 |
 |---|---|
-| 脚本 | `skills/workflow-audit/audit-pipeline.js` |
+| 脚本 | `skills/workflow-audit/audit-pipeline.js` / `validate.js` / `chain-report.js` |
 | 交接文档 | `workflow/TASK-SUMMARY.md` |
 | 原层级式编排 | `skills/pipeline/SKILL.md` |
 | 确定性编排层 | `skills/audit-runner/` |
 | 底层硬封装 | `extensions/audit-tools.py`（PATH: `audit-tools`） |
 | CWE 方法论 | `skills/code-audit/SKILL.md` |
-| 角色简报 | `agents/harness.md` / `auditor.md` / `tracer.md` / `exploit.md` / `chain.md` |
+| 角色简报 | `agents/harness.md` / `auditor.md` / `exploit.md` / `chain.md`；`tracer.md` 标 ARCHIVED（2026-08-21 并入 auditor） |

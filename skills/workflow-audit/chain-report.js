@@ -127,7 +127,6 @@ if (confirmed.length > 0) {
     impact: c.impact,
     evidence: c.evidence,
     poc_path: c.poc_path,
-    trace_path: c.trace_path,
     reachability_basis: c.reachability_basis || "",
     status: c.status,
   }));

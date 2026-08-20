@@ -1,8 +1,10 @@
 ---
 name: c-tracer
-description: Reachability tracer that proves or disproves whether attacker-controlled input reaches a vulnerability sink in C/C++/Shell/Python code. Uses Joern taint paths + clangd semantic verification. Should use a stronger model than hunting agents — deliberate disagreement pattern.
+description: ARCHIVED 2026-08-21 — reachability has been merged into c-auditor (HUNT). Kept for legacy references and optional patch re-attack verification. Reachability tracer that proves or disproves whether attacker-controlled input reaches a vulnerability sink in C/C++/Shell/Python code.
 tools: read, grep, find, ls, bash
 ---
+
+> **ARCHIVED 2026-08-21**：TRACE 阶段已并入 HUNT —— `c-auditor` 现在直接产出 `trace_result/call_chain/data_flow/defenses_checked/reachability_basis`。本简报不再被 workflow-audit 段2 派发；仅保留供补丁重攻击（patch re-attack）或 legacy 参考使用。若仍要派发独立可达性复核，可用本简报配合 `schemas/stage-trace.json`。
 
 You are a reachability tracer. Your job is to prove or disprove whether attacker-controlled input reaches a specific vulnerability sink. You do NOT find new vulnerabilities — you trace the path that a previously identified finding describes.
 

@@ -22,8 +22,8 @@ Every stage output must conform to its schema. Check by reading the schema file 
 
 | Stage | Schema | Key required fields |
 |-------|--------|-------------------|
-| HUNT | `schemas/stage-finding.json` | vuln_class, file, line, sink, entry_point, confidence, evidence |
-| TRACE | `schemas/stage-trace.json` | trace_result, entry_point, call_chain, defenses_checked |
+| HUNT | `schemas/stage-finding.json` | vuln_class, file, line, sink, entry_point, confidence, evidence, attacker_model, trace_result, call_chain, data_flow, defenses_checked, reachability_basis |
+| TRACE (ARCHIVED 2026-08-21, 已并入 HUNT) | `schemas/stage-trace.json` | 仅供 legacy/补丁重攻击参考 |
 | VALIDATE | `schemas/stage-validation.json` | finding_id, status, technique_used, detection_method |
 
 If output is missing required fields, send it back to the agent with repair guidance. Max 2 repairs per stage.
@@ -63,25 +63,17 @@ Check coverage per class. Only `INCOMPLETE` classes (entry points left unchecked
 
 Terminate when zero `INCOMPLETE` classes remain, or after 2 iterations (safety cap). If the cap hits with `INCOMPLETE` classes, report them as `INCOMPLETE` in coverage — do not freeze them as `NOT_FOUND`.
 
-## 3. REACHABILITY TRACE (gate before validation)
-For each hypothesis, before running exploit, **prove the sink is reachable by attacker input**:
+## 3. REACHABILITY (merged into HUNT, 2026-08-21)
+**TRACE stage no longer exists as a separate dispatch.** The auditor (HUNT) now produces the structured reachability verdict directly in each finding: `trace_result` (REACHABLE/UNREACHABLE), `call_chain`, `data_flow`, `defenses_checked`, `reachability_basis`, and conditional `impact_if_reachable` / `unreachable_reason`.
 
-```
-subagent({agent: "c-tracer",
-  task: "Trace whether attacker input reaches the sink at <file:line>.
-           Entry point: <entry_point>. Sink: <sink>. Language: <language>.
-           Use Joern taint query + clangd hop verification.
-           Output REACHABLE or UNREACHABLE with call chain + data_flow."})
-```
-
-Validate each trace output against `schemas/stage-trace.json`:
-- Must have trace_result (REACHABLE/UNREACHABLE)
-- If REACHABLE: must have call_chain, data_flow, defenses_checked, attacker_model, impact_if_reachable
-- If UNREACHABLE: must have unreachable_reason
+Before running exploit, verify each hypothesis carries these HUNT trace fields against `schemas/stage-finding.json` (the merged finding+trace contract):
+- `trace_result` must be REACHABLE/UNREACHABLE
+- If REACHABLE: must have `call_chain`, `data_flow`, `defenses_checked`, `attacker_model`, `impact_if_reachable`
+- If UNREACHABLE: must have `unreachable_reason`
 
 Only REACHABLE findings advance to validation. Log UNREACHABLE as killed in the casefile: `CaseUpdate(id, { status: "killed", nextStep: "unreachable: <reason>" })`.
 
-Use a **different model** for the tracer than the auditor. Deliberate model diversity prevents the same blind spots from producing false positives.
+Deliberate model diversity now lives in VALIDATE: use a **different/stronger model** for `c-exploit` than the auditor, and instruct it to independently challenge the HUNT trace fields (disconfirmation-first) before writing the PoC.
 
 ## 4. ADVERSARIAL VALIDATION (per traced finding, gated)
 For each REACHABLE case, spawn `subagent({agent: "c-exploit", task: "Phase 1: EXPLOIT", turnBudget: {maxTurns: 15, graceTurns: 2}})`. Run through `PromoteFinding`. If exit 0 + real impact → the case is confirmed by `PromoteFinding`. Then `CaseUpdate(id, { impact, severity })`.
@@ -119,7 +111,7 @@ Validate chain output against `schemas/stage-chain.json`. If chain analysis fail
 For each confirmed finding, spawn `subagent({agent: "c-exploit", task: "Phase 2: PATCH", turnBudget: {maxTurns: 20, graceTurns: 2}})`. Require:
 - Fix compiles (self-contained syntax/type check) — full project build optional
 - Proof the original repro no longer exits 0 (sanitizer silent)
-- **Re-attack by fresh tracer:** spawn `subagent({agent: "c-tracer", task: "..."})` targeting the patched code. Only accept the fix if the fresh tracer confirms the sink is no longer reachable.
+- **Re-attack by fresh reachability re-check:** spawn a fresh re-check (the archived `c-tracer` brief may be used) targeting the patched code. Only accept the fix if it confirms the sink is no longer reachable.
 
 Then `CaseUpdate(id, { status: "reported", remediation: <summary> })`.
 
@@ -132,7 +124,7 @@ Produce a final report conforming to `schemas/stage-report.json`:
 
 ## Non-negotiables
 - No finding advances without passing its stage schema. If the output is malformed, send it back.
-- No finding is validated without a reachability trace showing REACHABLE.
+- No finding is validated without a reachability verdict (HUNT trace fields) showing REACHABLE.
 - A finding is only `confirmed` with evidence + poc + impact + severity and a PoC that exited 0.
-- A patch isn't safe until a fresh tracer confirms the sink is no longer reachable.
+- A patch isn't safe until a fresh reachability re-check confirms the sink is no longer reachable.
 - Coverage must be tracked per class with entry-point lists. Only `INCOMPLETE` classes re-queue in gapfill; `NOT_FOUND` requires an empty UNCHECKED list.

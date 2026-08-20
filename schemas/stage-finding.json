@@ -1,9 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Stage Finding",
-  "description": "A vulnerability finding produced by the auditor/hunter stage. Must pass validation before advancing to exploit.",
+  "title": "Stage Finding (merged with reachability trace)",
+  "description": "A vulnerability finding produced by the auditor/hunter stage, including the structured reachability verdict that previously came from the tracer stage (TRACE merged into HUNT, 2026-08-21). Must pass validation before advancing to VALIDATE.",
   "type": "object",
-  "required": ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence"],
+  "required": [
+    "vuln_class",
+    "file",
+    "line",
+    "sink",
+    "entry_point",
+    "confidence",
+    "evidence",
+    "attacker_model",
+    "trace_result",
+    "call_chain",
+    "data_flow",
+    "defenses_checked",
+    "reachability_basis"
+  ],
   "properties": {
     "vuln_class": {
       "type": "string",
@@ -64,12 +78,70 @@
     },
     "attacker_model": {
       "type": "string",
-      "description": "Who the attacker is (unprivileged local user, remote network, same-user sandbox, DBus any-user, etc.)"
+      "description": "Who the attacker is (unprivileged local user, remote network, same-user sandbox, DBus any-user, setuid context, etc.)"
     },
     "subsystem": {
       "type": "string",
       "description": "Which subsystem of the target this affects"
+    },
+    "trace_result": {
+      "type": "string",
+      "enum": ["REACHABLE", "UNREACHABLE"],
+      "description": "Whether attacker-controlled input reaches the sink. Produced by the auditor (HUNT) as part of the merged finding+trace contract."
+    },
+    "call_chain": {
+      "type": "array",
+      "description": "The function call path from entry point to sink",
+      "items": {
+        "type": "string",
+        "description": "One step in the chain: file:function → next:function"
+      },
+      "minItems": 1
+    },
+    "data_flow": {
+      "type": "string",
+      "description": "Taint path description: how the attacker-controlled value is transformed from entry to sink (e.g. argv[1] → strlen(x)+1 → memcpy(dst,src,n)). Include value-level transformations, not just function names."
+    },
+    "defenses_checked": {
+      "type": "array",
+      "description": "Every defense examined on the path and whether it blocked the attacker",
+      "items": {
+        "type": "object",
+        "required": ["defense", "location", "verdict"],
+        "properties": {
+          "defense": { "type": "string", "description": "The defense mechanism" },
+          "location": { "type": "string", "description": "Where it was found (file:line)" },
+          "verdict": {
+            "type": "string",
+            "enum": ["bypassed", "blocked", "not-present"],
+            "description": "Whether the defense stops the attacker"
+          }
+        }
+      }
+    },
+    "reachability_basis": {
+      "type": "string",
+      "enum": ["in-tree", "export-contract", "external-context"],
+      "description": "Basis for the reachability verdict: in-tree (verified tree path), export-contract (export symbol with no in-tree callers is a designed external call surface), external-context (explicit auditor-provided ecosystem knowledge)"
+    },
+    "impact_if_reachable": {
+      "type": "string",
+      "description": "What an attacker gains by reaching this sink (required when REACHABLE)"
+    },
+    "unreachable_reason": {
+      "type": "string",
+      "description": "Why the sink is unreachable (required when UNREACHABLE)"
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "trace_result": { "const": "REACHABLE" } } },
+      "then": { "required": ["impact_if_reachable"] }
+    },
+    {
+      "if": { "properties": { "trace_result": { "const": "UNREACHABLE" } } },
+      "then": { "required": ["unreachable_reason"] }
+    }
+  ],
   "additionalProperties": false
 }

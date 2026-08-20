@@ -72,8 +72,8 @@ Skills（`skills/pipeline` → skill 名 `codeaudit-pipeline`、`skills/code-aud
 `skills/workflow-audit/`（skill 名 `workflow-audit`）把同一套流水线改成 **DSH `workflow` 工具驱动的无主-agent 作业**：主 agent 只发一次调用，各阶段在新鲜上下文的子 agent 中执行，消灭主 agent 的"会话长寿税"（实测基线 32.1M tokens 中 31.8M 是历史重发；workflow 模式主 agent 单轮 ~1 万量级）。
 
 ```
-段1 audit-pipeline.js   RECON → HUNT → GAPFIL        → {findings[], coverage}
-段2 trace-validate.js   TRACE → VALIDATE             → {confirmed[], killed[]}
+段1 audit-pipeline.js   RECON → HUNT → GAPFIL        → {findings[](含 trace 字段), coverage}
+段2 validate.js         VALIDATE                     → {confirmed[], killed[], env_blocked[], unreachable[]}
 段3 chain-report.js     CHAIN → REPORT               → {report}
 ```
 
@@ -82,18 +82,18 @@ Skills（`skills/pipeline` → skill 名 `codeaudit-pipeline`、`skills/code-aud
 ## 流水线阶段机
 
 ```
-RECON → HUNT → GAPFIL(循环) → TRACE → VALIDATE → CHAIN → REPORT
-  ↑___________________|                |
-  └────── FEEDBACK ────┘              FIX (可选)
+RECON → HUNT(+可达性) → GAPFIL(循环) → VALIDATE → CHAIN → REPORT
+  ↑___________________|                     |
+  └────── FEEDBACK ────┘                   FIX (可选)
 ```
+> TRACE 阶段已并入 HUNT（2026-08-21）：auditor 直接产出 finding + 可达性 trace 字段；VALIDATE 作为独立第二视角先否证再 PoC。
 
 | 阶段 | 做什么 | 门禁 |
 |------|--------|------|
 | RECON | 入口点清单 + 工具链验证 + CPG 构建（fuzzy）| 目标/工具链记录 |
-| HUNT | 按 CWE 类×语言并发审计；Joern 强制引擎；codebase-memory 粗筛 | stage-finding.json |
+| HUNT | 按 CWE 类×文件聚合审计；Joern 强制引擎；**产出 finding + 可达性 trace 字段**（TRACE 已并入） | stage-finding.json（合并契约） |
 | GAPFIL | INCOMPLETE 类补查（按入口点粒度）| 覆盖追踪 |
-| TRACE | Joern 污点查询 → clangd 逐跳验证 → data_flow 值级路径 | stage-trace.json + REACHABLE |
-| VALIDATE | 自包含 repro + sanitizer 触发（不编译目标）| stage-validation.json + exit 0 |
+| VALIDATE | 独立否证 HUNT 可达性 + 自包含 repro + sanitizer 触发（不编译目标）| stage-validation.json + exit 0 |
 | CHAIN | 已确认漏洞组合链（cwe_id/cvss）| stage-chain.json |
 | REPORT | KVE 模板对接报告（cwe_id/cvss_vector/cvss_score）| stage-report.json |
 
@@ -141,7 +141,7 @@ RECON → HUNT → GAPFIL(循环) → TRACE → VALIDATE → CHAIN → REPORT
 
 ```
 why-c-vulunerable/
-├── agents/                  # c-harness, c-auditor, c-tracer, c-exploit, c-chain
+├── agents/                  # c-harness, c-auditor, c-exploit, c-chain（c-tracer 已 ARCHIVED, 2026-08-21 并入 c-auditor）
 ├── skills/
 │   ├── pipeline/SKILL.md    # 阶段机编排（代码审计版）+ 技能加载清单
 │   ├── audit-runner/        # 迁移优先脚手架层（doctor/cpg/gate/coverage/ledger/resilience + queries/）

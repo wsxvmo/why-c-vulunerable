@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Stage Trace",
-  "description": "Result of a reachability trace from the tracer agent. Must pass before a finding can be promoted to confirmed.",
+  "title": "Stage Trace (ARCHIVED)",
+  "description": "ARCHIVED 2026-08-21 — reachability has been merged into stage-finding (c-auditor/HUNT produces trace_result/call_chain/data_flow/defenses_checked/reachability_basis). This schema is retained for legacy references and optional patch re-attack verification.",
   "type": "object",
   "required": ["trace_result", "entry_point", "call_chain", "defenses_checked", "attacker_model"],
   "properties": {

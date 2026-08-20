@@ -11,24 +11,26 @@ description: Full pipeline orchestration skill for C/C++/Shell/Python source cod
 |---|---|---|
 | **`audit-runner`** | **确定性编排层（本流水线的工具底座）**: `doctor.py`（迁移健康检查）、`cpg.py`（CPG 生命周期+查询模板）、`gate.py`（schema 门禁）、`coverage.py`（覆盖状态机+GAPFIL）、`ledger.py`（账本去重）、`resilience.py`（中间结论快照） | **每次运行前必加载**（RECON 之前） |
 | `code-audit` | 每 CWE 类方法论：checklist / detection / confirmation / false-positive elimination | HUNT/GAPFIL 派发前 |
-| `audit-tools` | Joern/codebase-memory 硬封装（禁裸 joern） | HUNT/TRACE 引擎调用时 |
+| `audit-tools` | Joern/codebase-memory 硬封装（禁裸 joern） | HUNT/VALIDATE 引擎调用时 |
 | `tricks` | 卡住时的思考框架、kill 分类、证据质量阶梯 | 任意阶段陷入困境时 |
-| `c-harness` / `c-auditor` / `c-tracer` / `c-exploit` / `c-chain` | 五个流水线角色简报 | 对应阶段派发子代理前 |
+| `c-harness` / `c-auditor` / `c-exploit` / `c-chain` | 流水线角色简报（`c-tracer` 2026-08-21 并入 `c-auditor`，标 ARCHIVED） | 对应阶段派发子代理前 |
 
 > 铁律：**不用 audit-runner 的确定性过程不算"走流水线"** —— CPG 构建/查询、schema 门禁、覆盖统计、账本登记、中间快照必须经 `doctor.py`/`cpg.py`/`gate.py`/`coverage.py`/`ledger.py`/`resilience.py`，手工重做一遍不产生额外覆盖，只增加错误面（本次审计的失败样本: CPG 状态混乱 ×3、println 契约 ×8、重复案件 ×2、结论未落地 ×2）。
 
 ## Stage Machine
 
 ```
-RECON → HUNT → GAPFIL(loop) → TRACE → VALIDATE → CHAIN → REPORT
-  ↑___________________|                    |
-  └────── FEEDBACK ────┘                    |
-         (traces into new hunts)            |
-                                            ↓
-                                      FIX (optional)
+RECON → HUNT(+reachability) → GAPFIL(loop) → VALIDATE → CHAIN → REPORT
+  ↑___________________|                          |
+  └────── FEEDBACK ────┘                          |
+         (traces into new hunts)                  |
+                                                  ↓
+                                            FIX (optional)
 ```
 
-Finish coverage (hunt + gapfill) before spending trace budget. Trace only the hypotheses that survived a complete hunt, then validate the reachable ones.
+> **2026-08-21**：TRACE 阶段已并入 HUNT —— auditor 直接产出 finding + 可达性 trace 字段；VALIDATE 负责独立否证 + PoC。本 skill 是 legacy 编排参考，实际运行以 `skills/workflow-audit`（无主-agent 三段式）为准。
+
+Finish coverage (hunt + gapfill) before spending validation budget. Validate only the REACHABLE hypotheses that survived a complete hunt.
 
 Each stage produces a structured output. The next stage validates it before starting. If validation fails, the stage retries with repair guidance.
 
@@ -38,7 +40,7 @@ The pipeline assumes the target codebase is **in scope** and the toolchain is av
 
 1. **Target is defined.** Record the repo path + language distribution in the pipeline-run case `target` + `assumptions`. Every analysis must stay inside this codebase.
 2. **Toolchain is present.** Static analysis relies on `codebase-memory-mcp` (graph) + `grep`/`read` + `audit-runner`. Sanitizer validation relies on `gcc`/`clang` with `-fsanitize=address,undefined`, `valgrind`. Run `audit-runner doctor` at run start — 5 项健康检查（skill-tree/preset/schemas/toolchain/cache），FAIL 项自带 fix 指引。Record what's available.
-3. **Joern is available.** The pipeline uses Joern (fuzzy mode, no compilation needed) as a mandatory analysis engine for HUNT (joern-scan querydb) and TRACE (taint propagation queries). doctor.py 的 toolchain 检查覆盖 `joern joern-parse joern-scan audit-tools codebase-memory-mcp`。If missing, ask the user before starting.
+3. **Joern is available.** The pipeline uses Joern (fuzzy mode, no compilation needed) as a mandatory analysis engine for HUNT (joern-scan querydb + taint propagation queries; TRACE 已并入 HUNT). doctor.py 的 toolchain 检查覆盖 `joern joern-parse joern-scan audit-tools codebase-memory-mcp`。If missing, ask the user before starting.
 4. **Target indexed in codebase-memory-mcp.** Run `codebase-memory-mcp cli index_repository --repo-path <target>` (with extension-completion pre-step for extensionless files) if not already indexed. Record the project name. CPG 构建用 `audit-runner cpg build --root <abs-target>`（绝对 root + 显式输出 + 缓存命中 + 干净 cwd）。
 5. **Input surface identified.** Enumerate entry points in RECON **with a graph, not by hand** — hand/grep enumeration is the #1 source of blind spots (missing submodules → INCOMPLETE coverage). 首选 **codebase-memory 图**（索引可用性由 doctor.py 第 7 项判定）; 索引不可用时**文档化回退 joern CPG 图**（cpg.py query + queries/entry.sc）。两种都是图基枚举; 工具分层: RECON 用 codebase-memory 找攻击面, HUNT/TRACE 用 joern 深挖 sink/污点。Use codebase-memory queries to get the full candidate list, then confirm semantics with the model:
    ```bash
@@ -52,7 +54,7 @@ The pipeline assumes the target codebase is **in scope** and the toolchain is av
    ```
    For each candidate the model confirms semantics (dbus registration / socket callback / export table / exec entry / signal handler) and records the confirmed entry-point list in the pipeline-run case. The graph gives completeness; the model gives semantics.
 6. **Privilege context recorded.** Is the target setuid? runs as root? system daemon? This determines how deep `privilege-mgmt` / `permission-assignment` hunting goes.
-7. **tricks 经验注入（前馈, 必做）.** 按目标类型从 `skills/tricks/SKILL.md` 的"章节→适用场景映射"选择相关章节, 提炼成 ≤200 字经验注入块（格式见 tricks §使用方式）, 前置到**每个**派发的 auditor/tracer 提示词开头。目的: 子代理开局即带方向感（身份可伪造性/补丁兄弟漏修/否证纪律）, 而非卡住才自救。这是把历史复盘沉淀的经验在 RECON 阶段前馈注入 — 经验库(tricks) → RECON 选择 → 注入块 → 子代理。
+7. **tricks 经验注入（前馈, 必做）.** 按目标类型从 `skills/tricks/SKILL.md` 的"章节→适用场景映射"选择相关章节, 提炼成 ≤200 字经验注入块（格式见 tricks §使用方式）, 前置到**每个**派发的 auditor 提示词开头（TRACE 已并入 HUNT, 2026-08-21）。目的: 子代理开局即带方向感（身份可伪造性/补丁兄弟漏修/否证纪律）, 而非卡住才自救。这是把历史复盘沉淀的经验在 RECON 阶段前馈注入 — 经验库(tricks) → RECON 选择 → 注入块 → 子代理。
 
 **No compilation of the target is required or assumed.** The target may not build (missing deps, cross-compile). Static analysis (codebase-memory + clangd) and Joern fuzzy parsing never compile the target. Sanitizer repros (VALIDATE) compile only self-contained PoC files extracted from the target — never the full project.
 
@@ -63,7 +65,7 @@ If any prerequisite is missing, record it in the pipeline-run case and either as
 ## Stage Config
 
 Each stage has:
-- **model** — which model class to dispatch on (hunt = standard, trace = strong, validate = different than hunt for deliberate disagreement)
+- **model** — which model class to dispatch on (hunt = standard + reachability, validate = different/stronger than hunt for deliberate disagreement; tracer 已并入 HUNT)
 - **tools** — what tools the agent gets (trace has no write tools)
 - **output schema** — what shape the stage must emit
 - **max_turns** — when to terminate a stuck agent
@@ -158,6 +160,8 @@ audit-runner cpg query --cpg <cpg> --file queries/sinks.sc --timeout 240
 ```
 Joern candidates that survive `clangd`/read verification become hypotheses. Joern-only hits that cannot be verified semantically are dropped or marked low confidence.
 
+> **2026-08-21（TRACE 并入 HUNT）**：每个 auditor 对每个 emitted finding 必须额外产出可达性 trace 字段（`trace_result`、`call_chain`、`data_flow`、`defenses_checked`、`reachability_basis`，以及条件 `impact_if_reachable`/`unreachable_reason`），契约见 `schemas/stage-finding.json`。导出契约入口（无树内调用方的 intended/accidental 导出）默认 `REACHABLE`/`export-contract`。独立的 TRACE 阶段已删除。
+
 Coverage rule: check at least 3 entry points per class. After all auditors return, aggregate coverage. Coverage is per-entry-point, not a single tri-state — a class is only `NOT_FOUND` when every entry point identified in recon was actually examined:
 ```
 COVERED:    class examined across all identified entry points (≥1 hypothesis OR each entry point ruled out with reason)
@@ -206,38 +210,15 @@ Any loop with two or more independently-managed index variables (`i`/`j`, `p`/`q
 \`\`\`
 COVERED:    class examined across all identified entry points (≥1 hypothesis OR each entry point ruled out with reason)
 
-### TRACE: One agent per finding
+### TRACE: ARCHIVED (2026-08-21, 已并入 HUNT)
 
-**Pre-trace gate (30 seconds, do not skip):** before spending a TRACE budget, apply the kill taxonomy (code-audit §10) — any finding that fails one of these is killed here, not traced:
-1. Does a caller outside the attacker's own process reach the sink with attacker-controlled data? (else KILL-1 unreachable / KILL-4 self-attack)
-2. Is the fix already in the shipped version (BUG#/changelog/patched diff)? (else KILL-2 already-fixed)
-3. Does the outcome cross a privilege/trust boundary the attacker lacks? (else KILL-3 no-gain)
-4. Is the authorization identity forgeable (argv/cmdline/env/cache-key)? (if yes, escalate priority — spoofable-identity class, code-audit §3.1a)
+**独立的 TRACE 阶段已删除。** 可达性证明现在是 `c-auditor` 的职责：HUNT 输出 finding 时直接携带 `trace_result/call_chain/data_flow/defenses_checked/reachability_basis`（见 `schemas/stage-finding.json` 合并契约）。导出契约入口默认 `REACHABLE`（`reachability_basis=export-contract`）。
 
-Only findings that pass the gate advance to a full trace. Record the gate result in the pipeline-run case (`nextStep: "gate: killed N as KILL-x"`) so gapfill does not re-queue them.
+保留给补丁重攻击/legacy 参考：若要派独立可达性复核，可用 `agents/tracer.md`（已标 ARCHIVED）配合 `schemas/stage-trace.json`。VALIDATE（`c-exploit`）现在是流水线的独立第二视角：必须独立挑战 HUNT 的可达性判定（disconfirmation-first），再写确认 PoC。
 
-```
-For each hypothesis that passed validation:
-  subagent({agent: "c-tracer",
-    task: "Trace whether attacker input reaches the sink at <file:line>. ..."})
-```
+Only findings with `trace_result: REACHABLE` advance to exploit.
 
-**Tracer MUST use the Joern taint engine as the primary path-finder** (经 audit-runner, 禁止裸 joern):
-```
-# 1. Run taint query on the CPG built during HUNT (or rebuild via cpg.py if missing):
-audit-runner cpg query --cpg <cpg> --file /tmp/taint.sc --timeout 240
-#    taint 模板: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
-# 2. Joern output = candidate data-flow path (expression-level, cross-procedure)
-# 3. Verify each hop with read/grep (逐符号确认: 真实存在/无同名碰撞/类型匹配)
-# 4. Record the value-level path in the trace output's `data_flow` field
-#    (e.g. argv[1] → strlen(x)+1 → memcpy(dst,src,n))
-# 注意: 容器抽象 (jsoncpp Json::Value / std::string 包装) 下 OssDataflow 会假阴性 → 纯读码
-```
-Joern output is a **candidate** — never a verdict. Only paths verified hop-by-hop with clangd + read become REACHABLE. If Joern is unavailable for the target's language (e.g. Shell), fall back to codebase-memory `trace_path --mode data_flow` + manual hop verification.
-
-Only findings with `TRACE RESULT: REACHABLE` advance to exploit.
-
-### VALIDATE: One agent per traced finding
+### VALIDATE: One agent per REACHABLE finding
 
 ```
 For each reachable finding:
@@ -416,8 +397,7 @@ subagent({agent: "c-auditor",
 
 | Agent | maxTurns | notes |
 |-------|----------|-------|
-| auditor | 20 | 25 with gapfill |
-| tracer | 12 | read-only, should be fast |
+| auditor | 20 | 25 with gapfill；含可达性证明（TRACE 已并入） |
 
 ### Task sizing (hard lesson from production runs)
 

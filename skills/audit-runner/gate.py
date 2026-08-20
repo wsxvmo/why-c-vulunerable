@@ -16,7 +16,10 @@ from pathlib import Path
 import config
 
 REQUIRED_BY_STAGE = {
-    "finding":    ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence"],
+    # 2026-08-21: TRACE 已并入 HUNT — finding 直接携带可达性 trace 字段
+    "finding":    ["vuln_class", "file", "line", "sink", "entry_point", "confidence", "evidence",
+                   "attacker_model", "trace_result", "call_chain", "data_flow", "defenses_checked",
+                   "reachability_basis"],
     "trace":      ["trace_result", "entry_point", "call_chain", "defenses_checked", "attacker_model"],
     "validation": ["finding_id", "status", "technique_used", "detection_method"],
     "chain":      ["chains", "summary"],
@@ -46,6 +49,10 @@ def quick_validate(output_path: str, stage: str) -> tuple[int, list[str]]:
             for k in REQUIRED_BY_STAGE[stage]:
                 if k not in f or f[k] in (None, ""):
                     errors.append(f"finding[{i}] 缺字段 {k}")
+            if f.get("trace_result") == "REACHABLE" and not f.get("impact_if_reachable"):
+                errors.append(f"finding[{i}] REACHABLE 缺 impact_if_reachable")
+            if f.get("trace_result") == "UNREACHABLE" and not f.get("unreachable_reason"):
+                errors.append(f"finding[{i}] UNREACHABLE 缺 unreachable_reason")
     else:
         for k in REQUIRED_BY_STAGE[stage]:
             if k not in data or data[k] in (None, ""):
