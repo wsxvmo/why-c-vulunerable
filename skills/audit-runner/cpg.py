@@ -179,7 +179,19 @@ def _cli() -> int:
     if args.cmd == "build":
         res = build(args.root, args.force, args.out)
     elif args.cmd == "query":
-        res = query(args.cpg, Path(args.file).read_text(), args.timeout)
+        qpath = Path(args.file)
+        if qpath.suffix.lower() != ".sc":
+            # 确定性护栏: cpg query 只接受 joern .sc 查询资产; .grep 是 rg 规则, joern 无法解析
+            # （历史: 把 .grep 喂给 cpg query → joern "NonForkingScriptRunner: exit code was 1" 让人困惑）
+            res = {"ok": False,
+                   "error": f"cpg query 只接受 joern .sc 查询资产, 收到后缀 '{qpath.suffix or '(无扩展名)'}': {args.file}"
+                            f" — .grep 资产是 rg 规则, 请用 rg 跑, 勿传给 cpg query"}
+        elif not qpath.exists():
+            res = {"ok": False,
+                   "error": f"查询资产不存在: {args.file}"
+                            "（请用资产绝对路径 …/skills/audit-runner/queries/classes/<class>.sc, 勿用相对路径 classes/…）"}
+        else:
+            res = query(args.cpg, qpath.read_text(), args.timeout)
     elif args.cmd == "clean":
         res = {"ok": True, "removed": clean_workspace(args.root)}
     elif args.cmd == "fork":

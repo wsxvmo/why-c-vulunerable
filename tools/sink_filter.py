@@ -13,6 +13,11 @@ sink_filter.py — 九大类漏洞降噪引擎（确定性，无 AI）
   python3 sink_filter.py --cpg /tmp/libsecurity1.cpg [--rules tools/denoise_rules.json]
   python3 sink_filter.py --src /path/to/source     # 自动建 CPG 再跑
   python3 sink_filter.py --cpg x.cpg --top 20      # 只看前 N 个 HIGH
+  python3 sink_filter.py --cpg x.cpg --out recon/candidates.json   # 显式输出路径
+  python3 sink_filter.py --cpg x.cpg --run-dir runs/xxx           # 默认写 <run-dir>/recon/candidates.json
+
+输出路径解析: --out(显式) > --run-dir(<run-dir>/recon/candidates.json) > CWD(仅兼容旧用法, 打印告警)。
+审计流水线必须传 --out 写 runDir（对齐 workflow-audit 纪律块 L113，避免把 candidates.json 落进目标树）。
 
 数据流:
   1. joern 查询: 对规则表中每个函数，找所有调用点 + 参数节点分类
@@ -152,6 +157,8 @@ def main():
     ap.add_argument("--rules", default=RULES_DEFAULT, help="规则表 JSON")
     ap.add_argument("--top", type=int, default=50, help="HIGH 最多输出条数")
     ap.add_argument("--include-drop", action="store_true", help="输出 DROP 档（默认隐藏）")
+    ap.add_argument("--out", help="candidates.json 输出路径（最高优先, 显式指定）")
+    ap.add_argument("--run-dir", help="runDir: 未传 --out 时输出到 <run-dir>/recon/candidates.json（对齐纪律块 L113）")
     args = ap.parse_args()
 
     if not args.cpg and not args.src:
@@ -214,7 +221,17 @@ def main():
                     "high": len(high), "low": len(low)},
         "alerts": alerts, "high": high, "low": low,
     }
-    out_path = os.path.join(os.getcwd(), "candidates.json")
+    # 输出路径解析: --out(显式) > --run-dir(<run-dir>/recon/ 子目录) > CWD(仅旧用法, 打印告警)
+    if args.out:
+        out_path = args.out
+    elif args.run_dir:
+        out_path = os.path.join(args.run_dir, "recon", "candidates.json")
+    else:
+        out_path = os.path.join(os.getcwd(), "candidates.json")
+        print("[w] 未指定 --out/--run-dir, 写入 CWD。"
+              "审计流水线应传 --out ${runDir}/recon/candidates.json 写 runDir（纪律块 L113）",
+              file=sys.stderr)
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     json.dump(out, open(out_path, "w"), indent=1, ensure_ascii=False)
     print(f"\n✅ 已写入 {out_path}")
 

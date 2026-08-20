@@ -37,7 +37,9 @@ audit-runner/
 ├── coverage.py   # CHECKED/UNCHECKED → COVERED/INCOMPLETE/SKIPPED 状态机 + GAPFIL 清单
 ├── ledger.py     # casefile.py CLI 封装（add 编号回显/去重/superseded）
 ├── resilience.py # 中间结论快照 checkpoint / resume（消灭空关闭消息丢结论）
-└── queries/      # joern *.sc 查询模板（println 强制 + 降级规则文档）
+├── pctx.py       # 权限上下文确定性探测器（2026-08-16）: C/守护进程信号集 → privilege_context/trigger_context
+├── exports.py    # 目标本地导出面枚举（2026-08-16）: exports.sc + 头文件交叉 → intended/accidental/internal
+└── queries/      # joern *.sc 查询模板（println 强制 + 降级规则文档; 含 exports.sc）
 ```
 
 ## 边界（不做什么）
@@ -45,6 +47,7 @@ audit-runner/
 - **不做判断**：HUNT 语义验证、TRACE 逐跳、KILL-3/4 裁定、PoC 设计、CHAIN 因果 —— 这些留 agent。
 - **不 import preset 内部**：只通过 CLI/JSON 调用 casefile.py 与 schemas，preset 可独立迁移。
 - **不假设固定环境**：工具链运行时 `which` 探测；缺失降级（joern 超时 → grep 兜底）。
+- **不扫兄弟组件**（2026-08-16）：pctx/exports 均**目标本地**；导出即入口点由目标自身决定，不做任何外部消费扫描。
 
 ## 使用（协调器视角）
 
@@ -56,6 +59,8 @@ python3 audit-runner cpg fork --src <cpg> --n <N> --dir <forks/>  # 每子代理
 audit-runner gate validate <run-dir> <stage> <out>   # schema 门禁
 audit-runner coverage report <auditor-outputs.json>  # 覆盖状态机 + GAPFIL 清单
 audit-runner resilience checkpoint <case> <stage> <summary>  # 中间结论落盘
+audit-runner pctx --root <abs-target> --out <path>   # 权限上下文（preflight, 单一事实源）
+audit-runner exports --root <abs-target> --cpg <cpg> --out <path>  # 导出面枚举（导出即入口点）
 ```
 
 > 注: `audit-runner cpg` 依赖 audit-runner 在 PYTHONPATH/当前目录; 子代理环境里请用**绝对路径**调用（`audit-runner cpg ...`）。

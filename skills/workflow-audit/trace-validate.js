@@ -12,18 +12,23 @@
 //   })
 //
 // args 契约:
-//   target     [必填] 目标源码绝对路径（与段1一致）
-//   findings   [必填] 段1 返回的 findings[]（每个含 vuln_class/file/line/sink/entry_point/
-//                    confidence/evidence/subsystem/attacker_model/cls）
-//   cpg_path   [必填] 段1 recon 构建的 CPG 路径
-//   runDir     [可选] 产物目录（建议与段1相同 runDir，子目录区分）
-//   skillRoot  [可选] 本仓库根
-//   models     [可选] {trace?, validate?} 模型覆盖（deliberate disagreement:
-//                    trace=deepseek-v4-pro, validate=deepseek-v4-pro 默认）
+//   target        [必填] 目标源码绝对路径（与段1一致）
+//   findings      [必填] 段1 返回的 findings[]（每个含 vuln_class/file/line/sink/entry_point/
+//                        confidence/evidence/subsystem/attacker_model/cls）
+//   cpg_path      [必填] 段1 recon 构建的 CPG 路径
+//   exports       [可选] 段1 返回的 exports[]（目标本地导出面, 导出即入口点）
+//   privilege_ctx [可选] 段1 返回的 privilege_ctx（preflight pctx 确定性产出）
+//   external_context [可选] 审计员显式生态知识（→ reachability_basis=external-context）
+//   tricks_injection [可选] 段1 返回的经验前馈注入块
+//   runDir        [可选] 产物目录（建议与段1相同 runDir，子目录区分）
+//   skillRoot     [可选] 本仓库根
+//   models        [可选] {trace?, validate?} 模型覆盖（deliberate disagreement:
+//                        缺省 = 继承主 agent 模型; 需要更强/不同模型时显式传入）
 //
 // 设计要点:
-//   * KILL 税（code-audit §10）作为 TRACE agent 的第一步内置, 不额外派 agent
-//   * TRACE: 每 finding 1 agent, cpg taint 查询 → 逐跳验证 → data_flow 值级路径
+//   * TRACE: 每 finding 1 agent, cpg taint 查询 → 逐跳验证 → data_flow 值级路径;
+//     可达性规则（2026-08-16）: 导出即入口点 —— sink 是导出符号且无树内调用方
+//     默认 REACHABLE（reachability_basis=export-contract）, 不再扫兄弟组件/requires_external_verify
 //   * VALIDATE: 每 REACHABLE finding 1 agent, 否证优先 + 自包含 repro + sanitizer
 //   * 条件必填（confirmed→poc_path 等）在脚本内二次检查, repair ≤2
 // ============================================================================
@@ -47,6 +52,32 @@ const cpg = args.cpg_path;
 if (!cpg) throw new Error("args.cpg_path 必填（段1 recon 产物）");
 const runDir = args.runDir || `${SKILL_ROOT}/workspace/runs/audit-seg2`;
 
+// 段1 RECON 产出的目标本地导出面（2026-08-16: 导出即入口点, 消费者树/兄弟扫描已退役）
+//   kind=intended(头文件声明, 设计公开 API) / accidental(符号表带出, 仍可达) / internal(树内专用)
+const exports_ = args.exports || [];
+const privilegeCtx = args.privilege_ctx || { privilege_context: "unknown", trigger_context: "unknown", signals: [], evidence_confidence: "low" };
+const externalContext = args.external_context || "";
+const exportEntries = exports_.filter((e) => e && e.kind && e.kind !== "internal" && Number(e.in_tree_callers || 0) === 0);
+const exportsBlock = (() => {
+  const lines = [];
+  if (exportEntries.length) {
+    lines.push(`\n## 目标导出面（RECON 产出, 导出即入口点）\n以下导出符号无树内调用方, 属"设计承诺的外部调用面"（kind=intended 公开 API / accidental 符号表带出）:\n${exportEntries.map((e) => `- ${e.symbol} @ ${e.file}:${e.line} (kind=${e.kind})`).join("\n")}`);
+  } else if (exports_.length) {
+    lines.push(`\n## 目标导出面（RECON 产出）\n${exports_.length} 个导出符号, 均已有树内调用方或有 internal 限定（本 finding 若触及导出 API 按树内路径判定）。`);
+  }
+  // 全通纪律（2026-08-18）: "默认消费者树全通"的结构化语义 — 导出契约入口默认存在消费者,
+  // 且消费者可能是高权限中介（root 守护进程转发非特权用户请求）。这条必须传给 VALIDATE,
+  // 否则 VALIDATE 会回退到"非特权直连/无消费者"的保守模型, 与全通相悖（F3 实证）。
+  if (exportEntries.length) {
+    lines.push(`\n## 全通语义（默认消费者树全通, 2026-08-18）\n上述导出符号按"设计承诺的外部调用面"处理: **默认存在消费者, 且消费者可能是高权限中介**（如 root 守护进程转发非特权用户请求）。attacker_model 不得回退为"需要 out-of-tree 特权消费者"; 无 external_context 时亦不得以"无消费者/非特权直连"降级攻击者模型、不得以此类推理 kill（详见 VALIDATE 纪律与脚本门禁）。`);
+  }
+  lines.push(`\n## 权限上下文（preflight pctx 确定性产出, 单一事实源）\nprivilege_context=${privilegeCtx.privilege_context} (trigger=${privilegeCtx.trigger_context || "unknown"}, confidence=${privilegeCtx.evidence_confidence || "low"})`);
+  if (externalContext) {
+    lines.push(`\n## 外部生态知识（审计员显式提供, 非扫描结果）\n${externalContext}`);
+  }
+  return lines.join("\n");
+})();
+
 // 段1 RECON 提炼的经验前馈注入块（调用方从段1 返回的 tricks_injection 转发）
 const tricksInjection = args.tricks_injection || "";
 const tricksBlock = tricksInjection
@@ -56,10 +87,28 @@ const tricksBlock = tricksInjection
 // 段1 findings 无 id — 分配稳定 id（F1..Fn），trace/validate 以 finding_id 关联
 const items = findings.map((f, i) => ({ ...f, id: f.id || `F${i + 1}` }));
 
-// deliberate disagreement: trace/validate 用更强/不同模型（可经 args 覆盖）
+// 2026-08-20 健壮化: 不依赖 agent() schema（schema 会诱发子代理 structured_output 工具,
+// 且限速/代码块会导致 null）。改为取最终文本后脚本内解析 JSON（兼容 ```json 围栏）。
+function parseAgentJson(text) {
+  if (!text) return null;
+  let s = String(text).trim();
+  // strip markdown code fences
+  s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try { return JSON.parse(s.slice(start, end + 1)); }
+  catch (e) { return null; }
+}
+
+
+// deliberate disagreement: trace/validate 缺省**继承主 agent 模型**（不传 model 即继承）;
+// 可经 args.models.trace/validate 显式覆盖（deliberate disagreement 需要时再指定更强/不同模型）
+// 2026-08-20: 支持 args.models.provider 覆盖 provider（绕过 ark-coing-plan 配额 429）。
 const MODELS = {
-  trace: (args.models && args.models.trace) || "deepseek-v4-pro",
-  validate: (args.models && args.models.validate) || "deepseek-v4-pro",
+  provider: (args.models && args.models.provider) || null,
+  trace: (args.models && args.models.trace) || null,
+  validate: (args.models && args.models.validate) || null,
 };
 
 const discipline = `## 铁律（不可违反）
@@ -81,7 +130,7 @@ const TRACE_SCHEMA = {
   required: ["finding_id", "trace_result", "entry_point", "call_chain", "data_flow", "defenses_checked", "attacker_model"],
   properties: {
     finding_id: { type: "string" },
-    trace_result: { type: "string", enum: ["REACHABLE", "UNREACHABLE", "KILLED"] },
+    trace_result: { type: "string", enum: ["REACHABLE", "UNREACHABLE"] },
     entry_point: { type: "string" },
     call_chain: { type: "array", items: { type: "string" } },
     data_flow: { type: "string" },
@@ -100,7 +149,8 @@ const TRACE_SCHEMA = {
     attacker_model: { type: "string" },
     impact_if_reachable: { type: "string" },
     unreachable_reason: { type: "string" },
-    kill_reason: { type: "string" },
+    reachability_basis: { type: "string", enum: ["in-tree", "export-contract", "external-context"] },
+    requires_external_verify: { type: "string" },
   },
 };
 
@@ -109,7 +159,9 @@ const VALIDATION_SCHEMA = {
   required: ["finding_id", "status", "technique_used", "detection_method"],
   properties: {
     finding_id: { type: "string" },
-    status: { type: "string", enum: ["confirmed", "killed"] },
+    // status: confirmed=实证确认; killed=机制被否证/无实际影响(硬 kill); env_blocked=环境/内核/部署无法本地复现
+    // （≠ 硬 kill, 段2 返回独立 env_blocked[], 不进 killed[], 供段3/人工/LIVE 确认）
+    status: { type: "string", enum: ["confirmed", "killed", "env_blocked"] },
     technique_used: { type: "string", enum: ["asan", "ubsan", "valgrind", "minimal-repro", "manual-review"] },
     detection_method: { type: "string" },
     build_config: { type: "string" },
@@ -117,16 +169,20 @@ const VALIDATION_SCHEMA = {
     poc_path: { type: "string" },
     run_log: { type: "string" },
     evidence_extracted: { type: "string" },
+    // killed → kill_reason 必填(脚本门禁); 对 export-contract finding, kill_reason/detection_method/
+    // evidence 若命中全通禁止类别(无消费者/非特权直连/文件权限门/no-gain), 脚本门禁 repair ≤2 拦截
     kill_reason: { type: "string" },
+    // 可选: killed 的分类标签, 便于段3/台账区分 kill 类型
+    kill_category: { type: "string", enum: ["mechanism_disproven", "no_real_impact", "unreachable_confirmed", "other"] },
     refinement_attempts: { type: "integer" },
   },
 };
 
 // ============================================================================
-// Phase 1: TRACE — 每 finding 1 个 agent（含 KILL 税前置门禁）
+// Phase 1: TRACE — 每 finding 1 个 agent（可达性规则: 导出即入口点, 2026-08-16）
 // ============================================================================
 phase("trace");
-log(`TRACE: ${findings.length} 个 finding, 模型=${MODELS.trace}`);
+log(`TRACE: ${findings.length} 个 finding, 模型=${MODELS.trace || "继承主agent"}`);
 
 const traceResults = await parallel(items.map((f) => () => {
   const fid = `${f.file}:${f.line}:${f.sink}`.replace(/[^A-Za-z0-9._:-]/g, "_");
@@ -134,6 +190,7 @@ const traceResults = await parallel(items.map((f) => () => {
 
 先 read ${BRIEFS.tracer} 与 ${SKILL_ROOT}/skills/pipeline/SKILL.md 的 TRACE 部分, 再开始。
 ${tricksBlock}
+${exportsBlock}
 
 finding 待追踪（finding_id 用本对象 id 字段的值, 原样返回）:
 ${JSON.stringify(f, null, 2)}
@@ -143,26 +200,34 @@ CPG: ${cpg}
 ${discipline}
 
 执行顺序:
-0) KILL 税前置门禁（30 秒, 不跳过）— 先于任何 trace 预算:
-   KILL-1 攻击者进程外的调用者无法以攻击者可控数据到达 sink?（不可达/自攻击）
-   KILL-2 已发布版本已修复（BUG#/changelog/补丁 diff）?
-   KILL-3 结果不跨攻击者缺乏的权限/信任边界?（无收益）
-   KILL-4 授权身份可伪造（argv/cmdline/env/cache-key）?（若是, 升优先级, 不是 kill）
-   任一命中 KILL-1/2/3 → 返回 {finding_id, trace_result: "KILLED", kill_reason: "KILL-x: <一句话>"}, 不花 trace 预算。
-1) 未 kill → 跑 taint 查询（经 audit-runner, 禁裸 joern）:
+1) **先读 HUNT 的 evidence 与 checked**（上方 finding 对象内）: HUNT 已逐跳验证过 entry→sink 链
+   （真实存在/无同名碰撞/类型匹配）。**不要整条链重读**——仅当 evidence 缺失或可疑时,
+   才对可疑跳 read/grep 确认。你的增量验证是下面 3 项:
+2) taint 查询（经 audit-runner, 禁裸 joern）:
    audit-runner cpg query --cpg ${cpg} --file <taint.sc> --timeout 240
    taint 模板: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
-2) Joern 输出仅候选 — 每跳 read/grep 逐符号验证（真实存在/无同名碰撞/类型匹配）;
-   记录 data_flow 值级路径（如 argv[1] → strlen(x)+1 → memcpy(dst,src,n)）。
+   Joern 输出仅候选 — 用于确认数据流**值级路径**（如 argv[1] → strlen(x)+1 → memcpy(dst,src,n)）。
 3) 检查路径上每个防御（长度检查/沙箱/LSM 顺序/已有等价机制）, 记入 defenses_checked。
-4) 产物写 ${runDir}/trace/${fid}/trace.json。
+4) **可达性判定（导出即入口点, 2026-08-16 规则, 不再扫兄弟组件）**:
+   - 若 sink 是导出符号且 kind∈{intended,accidental}、树内无调用方 → **默认 REACHABLE**,
+     reachability_basis="export-contract"（导出即设计承诺的外部调用面; 不因树内无调用方判不可达）;
+   - 树内路径证实 → reachability_basis="in-tree";
+   - 审计员显式提供外部知识（args.external_context 有值）→ reachability_basis="external-context";
+   - 具体外部调用路径/消费者确认属 PoC 阶段, TRACE 不承担; 无需再标 requires_external_verify
+     （仅当树内入口本身依赖运行时外部注册、连导出契约也无法定论的极少数情况才用）。
+5) 产物写 ${runDir}/trace/${fid}/trace.json。
 
 返回 JSON（严格按契约）:
-{finding_id, trace_result: REACHABLE|UNREACHABLE|KILLED, entry_point, call_chain: string[],
+{finding_id, trace_result: REACHABLE|UNREACHABLE, entry_point, call_chain: string[],
  data_flow, defenses_checked: [{defense, location, verdict: bypassed|blocked|not-present}],
- attacker_model, impact_if_reachable?, unreachable_reason?, kill_reason?}
-条件: REACHABLE → impact_if_reachable 必填; UNREACHABLE → unreachable_reason 必填; KILLED → kill_reason 必填。`,
-    { label: `trace:${fid}`, phase: "trace", schema: TRACE_SCHEMA, model: MODELS.trace });
+ attacker_model, impact_if_reachable?, unreachable_reason?,
+ reachability_basis?: in-tree|export-contract|external-context, requires_external_verify?}
+条件: REACHABLE → impact_if_reachable 必填, 且 reachability_basis 必填;
+      UNREACHABLE → unreachable_reason 必填;
+      极少数运行时外部注册无法定论 → requires_external_verify 必填(一句话说明需要外部/LIVE 确认什么)。
+**输出格式铁律（2026-08-20, 违反即判失败）**: 最终回复必须是**一个裸 JSON 对象**——不要 Markdown 代码块围栏（\`\`\`json ... \`\`\`），不要 \`\`\` 或 \`\`\`json 包裹，不要前后缀说明文字。
+**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`,
+    { label: `trace:${fid}`, phase: "trace", ...(MODELS.trace ? { model: MODELS.trace } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson);
 }));
 
 // traceResults 与 items 一一对应（parallel 保序）; 绑定 trace ↔ finding,
@@ -170,14 +235,14 @@ ${discipline}
 const tracePairs = traceResults.map((t, i) => ({ trace: t, item: items[i] })).filter((p) => p.trace);
 const reachable = tracePairs.filter((p) => p.trace.trace_result === "REACHABLE");
 const unreachable = tracePairs.filter((p) => p.trace.trace_result === "UNREACHABLE");
-const killedByGate = tracePairs.filter((p) => p.trace.trace_result === "KILLED");
-log(`TRACE 完成: REACHABLE=${reachable.length}, UNREACHABLE=${unreachable.length}, KILLED=${killedByGate.length}`);
+const extVerify = tracePairs.filter((p) => p.trace.requires_external_verify);
+log(`TRACE 完成: REACHABLE=${reachable.length}, UNREACHABLE=${unreachable.length}, requires-external-verify=${extVerify.length}`);
 
 // ============================================================================
 // Phase 2: VALIDATE — 每 REACHABLE finding 1 个 agent（否证优先 + sanitizer）
 // ============================================================================
 phase("validate");
-log(`VALIDATE: ${reachable.length} 个 REACHABLE finding, 模型=${MODELS.validate}`);
+log(`VALIDATE: ${reachable.length} 个 REACHABLE finding, 模型=${MODELS.validate || "继承主agent"}`);
 
 const validateResults = await parallel(reachable.map(({ trace: t, item: f }) => () => {
   const fid = t.finding_id || f.id;
@@ -191,10 +256,25 @@ ${JSON.stringify({ finding: f, trace: t }, null, 2)}
 产物目录: ${runDir}/validate/${fid}/ （先 mkdir -p）
 
 ${discipline}
+${exportsBlock}
 
 执行顺序（铁律）:
 1) 先写 DISCONFIRMATION 路径（比确认 PoC 便宜）— 证明触发"不可能"的脚本/确定性论证;
-   若否证脚本 exit 0（finding 被证伪）→ status: killed + kill_reason: <KILL-5 或具体原因>
+   否证**聚焦"机制能否真触发"**（输入/防御/环境前置是否成立）;
+   **不要重复确认可达性**（TRACE 已按"导出即入口点"规则判定 reachability_basis; 树外是否有
+   消费者是 PoC/外部事实, 本地静态无法证伪, 重查是浪费）;
+   **全通纪律（不可违反, 2026-08-18）**: 对 reachability_basis=export-contract 的 finding,
+   **禁止**以下列事实做否证前置或 kill 理由——它们都在重新引入"消费者不存在/非特权直连"假设,
+   与"默认消费者树全通"相悖（F3 实证）:
+   - "无树外消费者 / 无 in-tree 调用者 / 无特权消费者 / requires out-of-tree consumer"
+     （消费方是外部事实, TRACE 已按 export-contract 判 REACHABLE, 默认存在消费者）;
+   - "非特权直连 → 文件权限门 EACCES → 触发不可能"（调用者身份由消费者决定; 存在高权限中介
+     （如 root 守护进程转发非特权请求）时, 文件权限门被中介 euid 绕过, 库缺鉴权校验即真漏洞）;
+   - "no-gain / KILL-3 / 能写就直改"（仅当**调用者已具备与 sink 同等的写权限**时才成立;
+     全通模型下非特权用户无写权限, 写权限在中介手里而中介信任库 → no-gain 不成立）;
+   可用的否证方向: 机制本身在目标内静态/确定性不可触发（如路径常量对调不影响实际部署、
+   sink 无数据流、防御真实存在且不可绕过、目标自身写路径无法产出该输入）;
+   若否证脚本 exit 0（finding 被证伪）→ status: killed + kill_reason: <具体原因>
 2) 再写 SELF-CONTAINED repro（只提取自目标, 绝不编译整个项目）:
    C/C++: gcc -g -fsanitize=address,undefined repro.c -o repro && ./repro
    Python: python3 repro.py / Shell: bash repro.sh（解释执行, 无需 gcc）
@@ -204,45 +284,85 @@ ${discipline}
    evidence_extracted（崩溃回溯/泄漏数据/权限变化）
 5) 产物写 ${runDir}/validate/${fid}/（repro 源 + 编译产物 + 输出日志）
 6) 权威校验: audit-runner gate --stage validation 对输出校验（casefile.py validate 包装）
-7) 无法本地复现（需硬件/内核/网络对端）→ status: killed + kill_reason: sanitizer_no_trigger
-   （环境 blocked, 区别于硬 KILL; 在聚合报告里单列）
+7) 无法本地复现（需硬件/内核/网络对端/特定部署）→ status: env_blocked + kill_reason: <阻断原因>
+   （**环境 blocked, 区别于硬 KILL**: 段2 返回独立 env_blocked[] 供段3/人工/LIVE 确认, 不进 killed）;
+   注意: 对 export-contract finding, "本机/本环境无法复现"是 env_blocked 而非 killed, 不得据此否证。
 
 返回 JSON（严格按契约）:
-{finding_id, status: confirmed|killed, technique_used: asan|ubsan|valgrind|minimal-repro|manual-review,
+{finding_id, status: confirmed|killed|env_blocked, technique_used: asan|ubsan|valgrind|minimal-repro|manual-review,
  detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?,
- kill_reason?, refinement_attempts?}
-条件: confirmed → poc_path/run_log/evidence_extracted 必填; killed → kill_reason 必填。`,
-    { label: `validate:${fid}`, phase: "validate", schema: VALIDATION_SCHEMA, model: MODELS.validate });
+ kill_reason?, kill_category?, refinement_attempts?}
+条件: confirmed → poc_path/run_log/evidence_extracted 必填; killed → kill_reason 必填;
+      env_blocked → kill_reason(阻断原因) 必填。
+**输出格式铁律（2026-08-20, 违反即判失败）**: 最终回复必须是**一个裸 JSON 对象**——不要 Markdown 代码块围栏（\`\`\`json ... \`\`\`），不要 \`\`\` 或 \`\`\`json 包裹，不要前后缀说明文字。
+**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`,
+    { label: `validate:${fid}`, phase: "validate", ...(MODELS.validate ? { model: MODELS.validate } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson);
 }));
 
 // ============================================================================
 // 条件门禁（agent() schema 不支持 if/then — 脚本内二次检查 + repair ≤2）
 // ============================================================================
-function checkValidation(v) {
+// 全通禁止的 kill 推理（2026-08-18, 违背"默认消费者树全通"）:
+//   对 reachability_basis=export-contract 的 finding, 以下理由全部重新引入
+//   "消费者不存在/非特权直连"假设, 与导出契约默认存在消费者相悖（F3 实证）:
+//   - 无消费者类: 无树外消费者 / 无 in-tree 调用者 / 无特权消费者 / requires out-of-tree consumer
+//   - 非特权直连类: 非特权直连 → 文件权限门(EACCES) → 触发不可能
+//     （存在高权限中介时权限门被中介 euid 绕过, 库缺鉴权校验即真漏洞）
+//   - no-gain 类: KILL-3 / 能写就直改（仅当调用者已具备 sink 同等写权限才成立）
+// 命中 → 记入 gate 问题, repair 重派, 让 agent 在全通语义下重写 kill_reason 或转 env_blocked。
+const ALL_PASS_FORBIDDEN = [
+  "无树外消费者", "无 in-tree 调用者", "无特权消费者", "no in-tree consumer",
+  "no consumer", "requires out-of-tree consumer", "非特权直连", "unprivileged direct",
+  "no-gain", "KILL-3", "能写就直改", "文件权限门", "file-mode gate",
+];
+
+function allPassViolation(v, pair) {
+  if (!v || v.status !== "killed") return [];
+  if (!pair || !pair.trace || pair.trace.reachability_basis !== "export-contract") return [];
+  const surface = `${v.kill_reason || ""} ${v.detection_method || ""} ${v.evidence_extracted || ""}`;
+  const hits = ALL_PASS_FORBIDDEN.filter((t) => surface.includes(t));
+  if (!hits.length) return [];
+  return [`kill_reason 违背全通(导出契约入口默认存在消费者): 命中 "${hits.join('","')}" — 不得用"无消费者/非特权直连/文件权限门/no-gain"做 kill; 若机制被否证请改写 kill_reason 聚焦机制本身; 若仅环境无法复现用 status=env_blocked`];
+}
+
+function checkValidation(v, pair) {
   if (!v) return ["agent 失败(返回 null)"];
   if (v.status === "confirmed") {
     const missing = ["poc_path", "run_log", "evidence_extracted"].filter((k) => !v[k]);
     return missing.length ? missing.map((k) => `confirmed 缺 ${k}`) : [];
   }
-  if (v.status === "killed") return v.kill_reason ? [] : ["killed 缺 kill_reason"];
+  if (v.status === "killed") {
+    const issues = [];
+    if (!v.kill_reason) issues.push("killed 缺 kill_reason");
+    issues.push(...allPassViolation(v, pair));
+    return issues;
+  }
+  if (v.status === "env_blocked") return v.kill_reason ? [] : ["env_blocked 缺 kill_reason(阻断原因)"];
   return [`未知 status: ${v.status}`];
 }
+
+// pair 查找: 先按 finding_id, 失败按序兜底（与聚合段一致）
+const pairOf = (v) => reachable.find((p) => p.trace.finding_id === v.finding_id) || {};
 
 let validations = validateResults.filter(Boolean);
 let repairs = 0;
 const MAX_REPAIRS = 2;
 
 while (repairs < MAX_REPAIRS) {
-  const bad = validations.filter((v) => checkValidation(v).length > 0);
+  const bad = validations.filter((v) => checkValidation(v, pairOf(v)).length > 0);
   if (bad.length === 0) break;
   repairs++;
   log(`VALIDATE repair #${repairs}: ${bad.map((v) => v.finding_id).join(", ")}`);
   const fixed = await parallel(bad.map((v) => () =>
-    agent(`你的 VALIDATE 输出未过条件门禁（缺口: ${checkValidation(v).join("; ")}）。
-补上缺失字段（必要时重跑 repro 补证据, 已写产物勿重写）:
+    agent(`你的 VALIDATE 输出未过条件门禁（缺口: ${checkValidation(v, pairOf(v)).join("; ")}）。
+补上缺失字段（必要时重跑 repro 补证据, 已写产物勿重写）; 若命中"全通禁止"类 kill, 请在
+"默认消费者树全通"语义下重写 kill_reason（聚焦机制本身）或改 status=env_blocked:
 ${JSON.stringify(v, null, 2)}
-返回同一契约 JSON（confirmed → poc_path/run_log/evidence_extracted; killed → kill_reason）。`,
-      { label: `validate-repair:${v.finding_id}`, phase: "validate", schema: VALIDATION_SCHEMA, model: MODELS.validate })
+返回同一契约 JSON（confirmed → poc_path/run_log/evidence_extracted; killed → kill_reason;
+      env_blocked → kill_reason 阻断原因）。
+**输出格式铁律（2026-08-20, 违反即判失败）**: 最终回复必须是**一个裸 JSON 对象**——不要 Markdown 代码块围栏（\`\`\`json ... \`\`\`），不要 \`\`\` 或 \`\`\`json 包裹，不要前后缀说明文字。
+**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`,
+      { label: `validate-repair:${v.finding_id}`, phase: "validate", ...(MODELS.validate ? { model: MODELS.validate } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson)
   ));
   validations = validations.map((old) => {
     const fx = fixed.find((x) => x && x.finding_id === old.finding_id);
@@ -250,9 +370,10 @@ ${JSON.stringify(v, null, 2)}
   });
 }
 
-const gateFail = validations.filter((v) => checkValidation(v).length > 0);
+const gateFail = validations.filter((v) => checkValidation(v, pairOf(v)).length > 0);
 const confirmed = [];
 const killed = [];
+const envBlocked = [];
 for (let k = 0; k < validations.length; k++) {
   const v = validations[k];
   // 先按 finding_id 匹配, 失败则按序兜底（validateResults 与 reachable 同序, repair 保序）
@@ -263,27 +384,64 @@ for (let k = 0; k < validations.length; k++) {
     validation: v,
   };
   if (v.status === "confirmed") confirmed.push(entry);
+  else if (v.status === "env_blocked") envBlocked.push(entry);
   else killed.push(entry);
 }
 
-log(`段2完成: confirmed=${confirmed.length}, killed=${killed.length}, gateFail=${gateFail.length}`);
+log(`段2完成: confirmed=${confirmed.length}, killed=${killed.length}, env_blocked=${envBlocked.length}, gateFail=${gateFail.length}`);
+
+// 产物落盘契约(复盘坑1/3/4: 返回截断/手工抄大 JSON/丢字段):
+//   每个 trace 子 agent 已写 runDir/trace/<fid>/trace.json; 每个 validate 子 agent 已写
+//   runDir/validate/<fid>/ (repro 源 + 输出日志)。段2 返回只给"摘要 + 产物路径索引",
+//   主 agent 段3 从 runDir 读盘重建 confirmed 全量(含 trace.data_flow / validation.evidence 等),
+//   不再手工抄返回值。
+const indexArtifacts = (entries) => entries.map((e) => {
+  const fid = e.validation ? e.validation.finding_id : (e.trace ? e.trace.finding_id : "?");
+  return {
+    finding_id: fid,
+    vuln_class: (e.finding && e.finding.vuln_class) ?? null,
+    file: (e.finding && e.finding.file) ?? null,
+    line: (e.finding && e.finding.line) ?? null,
+    sink: (e.finding && (e.finding.sink || "").slice(0, 120)) ?? null,
+    entry_point: (e.finding && (e.finding.entry_point || "").slice(0, 150)) ?? null,
+    attacker_model: (e.finding && (e.finding.attacker_model || "").slice(0, 150)) ?? null,
+    status: e.validation ? e.validation.status : (e.trace ? e.trace.trace_result : "?"),
+    trace_result: (e.trace && e.trace.trace_result) ?? null,
+    reachability_basis: (e.trace && e.trace.reachability_basis) ?? null,
+    impact: (e.trace && (e.trace.impact_if_reachable || "").slice(0, 200)) ?? null,
+    evidence: (e.validation && (e.validation.evidence_extracted || e.validation.detection_method || "").slice(0, 200)) ?? null,
+    technique_used: (e.validation && e.validation.technique_used) ?? null,
+    kill_reason: (e.validation && e.validation.kill_reason) ?? null,
+    kill_category: (e.validation && e.validation.kill_category) ?? null,
+    trace_path: `${runDir}/trace/${String(fid).replace(/[^A-Za-z0-9._:-]/g, "_")}/trace.json`,
+    validate_dir: e.validation ? `${runDir}/validate/${String(fid).replace(/[^A-Za-z0-9._:-]/g, "_")}/` : null,
+    poc_path: (e.validation && e.validation.poc_path) ?? null,
+  };
+});
 
 return {
   pipeline: "code-audit-segment2",
   status: "complete",
   target,
-  confirmed,
-  killed,
-  // TRACE 级 KILLED（KILL 税拦截, 未进 VALIDATE）— 完整 trace 对象, 供段3/人工评审
-  killed_by_gate: killedByGate.map((p) => ({
-    finding: p.item || { finding_id: p.trace.finding_id },
-    trace: p.trace,
+  runDir,
+  confirmed: indexArtifacts(confirmed),
+  killed: indexArtifacts(killed),
+  // env_blocked（2026-08-18 新增）: 环境/内核/部署无法本地复现的结论 — ≠ 硬 kill, 供段3/人工/LIVE 确认,
+  // 段3 不得把它们当"已否证"处理
+  env_blocked: indexArtifacts(envBlocked),
+  // 极少数运行时外部注册/部署依赖无法静态定论（导出契约已覆盖主流, 此为逃生舱）→ 供段3/人工/LIVE
+  requires_external_verify: extVerify.map((p) => ({
+    finding_id: p.trace.finding_id,
+    trace_result: p.trace.trace_result,
+    trace_path: `${runDir}/trace/${String(p.trace.finding_id || "").replace(/[^A-Za-z0-9._:-]/g, "_")}/trace.json`,
+    summary: (p.trace.requires_external_verify || "").slice(0, 200),
   })),
   gate: {
     repairs,
     gate_fail_count: gateFail.length,
-    gate_fail: gateFail.map((v) => ({ finding_id: v.finding_id, issues: checkValidation(v) })),
+    gate_fail: gateFail.map((v) => ({ finding_id: v.finding_id, issues: checkValidation(v, pairOf(v)) })),
+    all_pass_forbidden: ALL_PASS_FORBIDDEN,
   },
-  stats: { traced: tracePairs.length, reachable: reachable.length, unreachable: unreachable.length, killed_by_gate: killedByGate.length },
+  stats: { traced: tracePairs.length, reachable: reachable.length, unreachable: unreachable.length, env_blocked: envBlocked.length, requires_external_verify: extVerify.length },
   agents: { trace: tracePairs.length, validate: validations.length, started: traceResults.length + validations.length + repairs },
 };

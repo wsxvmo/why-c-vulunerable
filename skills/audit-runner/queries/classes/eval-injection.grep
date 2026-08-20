@@ -1,0 +1,26 @@
+# eval-injection.grep — Python eval/exec 注入 (CWE-95/94)
+# ============================================================================
+# 依据: code-audit §6.1
+#   Checklist: eval()/exec()/execfile() 输入非常量; compile()+exec 攻击者数据;
+#   functools/importlib 从攻击者可控名动态导入; Jinja2/Mako 模板渲染用户数据。
+# joern 不覆盖 Python → 本类资产 = grep 模式 + 语义检查纪律。
+# 权限/触发上下文: eval 攻击者输入 → 以进程权限 RCE; root 服务 → 提权。
+# ============================================================================
+
+# 1) eval/exec/compile 直接执行(最高危)
+rg -n "eval\(|exec\(|execfile\(|compile\(" --type py --glob '!**/tests/**' --glob '!**/test_*.py' .
+rg -n "\beval\b|\bexec\b" --type py .
+
+# 2) 动态导入(攻击者可控名 → 任意模块加载)
+rg -n "importlib\.(import_module|__import__)|__import__\(|functools\.partial.*import" --type py .
+rg -n "getattr\([^,]+,\s*[^\"']" --type py .   # 动态属性名(反射)
+
+# 3) 模板引擎渲染用户数据(SSTI)
+rg -n "render_template_string|jinja2\.Environment|Template\(.*\)\.render|from_string\(" --type py .
+rg -n "render\(" --type py .
+
+# 语义检查纪律(对每个命中):
+#   A. 输入来源? (请求参数/文件/env/配置) — 可控性
+#   B. 是否经过净化/白名单? (ast.literal_eval 是安全替代)
+#   C. 结论 = REACHABLE(可控+无挡) / BLOCKED(白名单挡)
+#   注意: eval 用于"配置求值"常被误认为安全 — 配置本身可被上游篡改则仍可控

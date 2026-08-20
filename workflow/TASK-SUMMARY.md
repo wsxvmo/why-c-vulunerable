@@ -75,6 +75,17 @@ skills/workflow-audit/
 | 会话 token 统计 | `/home/xvmo/.dsh/storages/session_projcache.json`（`tables.sessions.<id>.rows.tokenUsage.val.totals`） |
 | 当前主会话 id | `session-8eb9ec34-b153-46bf-84aa-fdff75b91447` |
 
+## 2026-08-16 变更：RECON 全面目标本地化（v2.2）
+
+设计收敛（多轮讨论结论，全部已落代码）：
+
+1. **消费者树/兄弟扫描整体退役**：版本漂移使"有引用=陈旧误报 / 无引用=采样空洞假阴性"双向失真，负期望价值。三脚本 consumers 引用清零，`siblings_root` 从契约移除。
+2. **导出即入口点**：新增 `audit-runner exports`（`queries/exports.sc` + 头文件交叉 → `intended/accidental/internal`）。结构规则：`kind∈{intended,accidental}` 且 `in_tree_callers==0` 的导出 → 自动注入候选池（权限类缺省审计点）；TRACE 中该 sink 默认 **REACHABLE**（`reachability_basis="export-contract"`），不再 requires_external_verify。`trace-validate.js` 的 consumersBlock → exportsBlock。
+3. **权限上下文确定性化**：新增 `audit-runner pctx`（C/守护进程信号集）——preflight 产出 `privilege_ctx`，单一事实源；RECON 引用不重推；喂 TRACE attacker_model + REPORT CVSS（AV/PR/UI）。
+4. **威胁推导纪律**：RECON 产出 `threats[]`（每入口点 ≥1 threat → 映射类），`recommended_classes` 从 threats 聚合推导；`group_priority` 有"threat 价值 × pctx 权重"的确定性默认。
+
+实测：pctx 确定性（ksaf-audit-daemon=high/User=root，libsecurity1=unknown，ksaf-dynamic-uid=low）；exports 分类正确（libsecurity1 6 intended + main accidental）。
+
 ## 验收标准
 
 - [ ] `skills/workflow-audit/` 存在，SKILL.md 可读

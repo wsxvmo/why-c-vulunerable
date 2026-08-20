@@ -1,0 +1,40 @@
+# shell-injection.grep — Shell 未引用展开 / 词分割 / 命令注入 (CWE-78)
+# ============================================================================
+# 依据: code-audit §5.1 + libsecurity1 复盘 case_482e79e7c6
+#   (initramfs security_set: awk gsub(" ","") 不移除 TAB → tab 注入保留;
+#    unquoted [ $var -eq 0 ] 词分割 → [ 1 -o 1 -eq 0 ], -o 被解释为 OR 运算符 → 恒真
+#    → SELinux 被降级 permissive。这是 shell 经典漏洞模式: 展开结果在 [ ] 里会当运算符解析。)
+# joern 不覆盖 shell → 本类资产 = grep 模式 + 语义检查纪律(替代 .sc)。
+# 权限/触发上下文: root@boot 执行 + 配置源无完整性校验 → privilege_context=high_privilege;
+#   配置可被上游(库 API 写配置)伪造 → trigger_context=unprivileged_user(链式)。
+# 注意(2026-08-18): 本资产内的 rg 模式硬编码 scripts/ 相对路径, 必须 cd <target> 后跑;
+#   若 scripts/ 下有逐字节相同副本(如 init-bottom/security_set 与 security_set.sh), 同一行命中会重复出现
+#   属预期 — RECON 汇总 candidate_hits 时按内容去重(保留 canonical 的真实点, 副本只留 content_dup_of 指针)。
+# ============================================================================
+
+# 1) 未引用的 [ ] 测试表达式(词分割注入面) — 最高危, 先扫
+#   语义: $var 未加引号 → 展开结果含空格/TAB → [ 变成多参数, 特殊符号(-o/-a/!) 当运算符
+#   纪律: 对每个命中, 检查值来源是否可含空白/TAB/运算符字符
+rg -n '\[\s*[^"'"'"']*\$[A-Za-z_][A-Za-z0-9_]*' scripts/ 2>/dev/null
+rg -n '\$[A-Za-z_][A-Za-z0-9_]*\s*-[eqn][eqnlt]' scripts/ 2>/dev/null
+
+# 2) 未引用的 echo 重定向到系统接口(选项注入 -n/-e + glob 展开)
+#   语义: echo $var > /sys/... 中 $var 未引号 → 若含 * 则 glob 展开, 若以 - 开头则当选项
+rg -n 'echo\s+\$[A-Za-z_][A-Za-z0-9_]*\s*>' scripts/ 2>/dev/null
+
+# 3) 命令替换/管道中的未引用变量(数据可含 shell 元字符)
+rg -n '(\$\(|\`)[^)]*\$(\(|\{)?[A-Za-z_]' scripts/ 2>/dev/null
+
+# 4) eval / sh -c / 反引号 直接执行(命令注入, 若输入可控)
+rg -n 'eval\s+|sh\s+-c|bash\s+-c|`' scripts/ 2>/dev/null
+
+# 5) 防御性对照: 值过滤(数值约束/字符白名单) — 判断注入面是否被挡
+#   纪律: awk '/[0-9]$/' 之类过滤器 → 值必须匹配才进分支; 但 gsub(" ","") 只去空格不去 TAB
+rg -n 'awk.*gsub|awk.*\[0-9\]|case\s+\$' scripts/ 2>/dev/null
+
+# 语义检查纪律(对每个 grep 命中, 必须手推一遍展开结果):
+#   A. 值从哪来? (config 文件 / cmdline / env / 用户输入) — 可控性
+#   B. 展开后进什么位置? (命令位置=注入; [ ] 测试=运算符注入; echo 参数=选项/glob)
+#   C. 有无过滤? (gsub 去什么字符? 数值约束是否在展开前?)
+#   D. 结论 = REACHABLE(可控+无挡) / BLOCKED(过滤挡) — 禁止仅凭"POSIX 不重新解析"否定
+#      (libsecurity1 教训: tracer 曾误判 [ $var -eq 0 ] 对非整数 fail-closed, 忽略 -o 运算符注入)

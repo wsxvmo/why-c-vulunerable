@@ -1,0 +1,26 @@
+# unsafe-deserialization.grep — Python 不安全反序列化 (CWE-502)
+# ============================================================================
+# 依据: code-audit §6.2
+#   Checklist: pickle.loads/load 处理不可信数据; yaml.load(非 safe_load);
+#   shelve 打开攻击者可写文件; marshal/dill/cloudpickle 处理不可信字节;
+#   jsonpickle(默认危险)。确认: 恶意 pickle __reduce__ → 命令执行。
+# joern 不覆盖 Python → grep 模式 + 语义检查纪律。
+# 权限/触发上下文: pickle 攻击者数据 → RCE; 反序列化入口常为 IPC/文件/缓存读取。
+# ============================================================================
+
+# 1) pickle / marshal / dill / cloudpickle(直接 RCE)
+rg -n "pickle\.(loads|load)|marshal\.(loads|load)|dill\.(loads|load)|cloudpickle\.(loads|load)" --type py --glob '!**/tests/**' .
+rg -n "shelve\.(open|DbfilenameShelf)" --type py .
+
+# 2) yaml.load(非 safe_load) — 需人工确认是否用了 yaml.safe_load
+rg -n "yaml\.load\(" --type py --glob '!**/tests/**' .
+rg -n "yaml\.(safe_load|unsafe_load)" --type py .
+
+# 3) jsonpickle(默认危险)
+rg -n "jsonpickle\.(encode|decode|loads|load)" --type py .
+
+# 语义检查纪律(对每个命中):
+#   A. 数据来源? (网络/文件/缓存/IPC) — 不可信则候选
+#   B. 是否改用安全替代? (yaml.safe_load / json / ast.literal_eval)
+#   C. 结论 = REACHABLE(不可信数据 + pickle/yaml.load) / BLOCKED(仅可信来源)
+#   注意: "内部缓存格式"也常被攻击者触及(缓存注入/文件替换), 不可信判定从严
