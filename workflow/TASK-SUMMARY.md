@@ -98,6 +98,13 @@ skills/workflow-audit/
 4. **契约升级**：`schemas/stage-finding.json` 成为 finding+trace 合并契约；`gate.py` 同步；`tracer.md`/`stage-trace.json` 标 ARCHIVED 保留（补丁重攻击/legacy）。
 5. **全通纪律平移**：导出契约入口默认存在消费者（可能高权限中介）的规则从 TRACE 平移到 HUNT 判定与 VALIDATE 否证，语义不变。
 
+### v3.1（2026-08-21）：VALIDATE 按文件分组派发
+
+- 按 `(file, vuln_class)` 聚合 REACHABLE finding，组 2–3 条（>3 按行号切块；单条单发）。
+- 组 agent 返回 `{validations: [...]}`，脚本扁平化后走既有 schemaGate/repair/聚合逻辑。
+- 组内每条 finding 独立可达性挑战 + 否证 + repro；产物各写各的 `runDir/validate/<fid>/`。
+- 组返回 null/漏项 → 自动降级单发重派一次，不丢 finding；`stats.groups` 记录组数。
+
 ## 验收标准
 
 - [ ] `skills/workflow-audit/` 存在，SKILL.md 可读

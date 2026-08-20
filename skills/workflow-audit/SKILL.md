@@ -1,6 +1,18 @@
 ---
 name: workflow-audit
-description: Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH workflow tool. Use for full-pipeline audits (RECON→HUNT→GAPFIL→VALIDATE→CHAIN→REPORT; TRACE merged into HUNT, 2026-08-21) that must NOT hold a long-lived coordinator session — the script audit-pipeline.js is read from disk and passed as the workflow script parameter each call, every stage runs as a fresh workflow subagent, and the caller only holds compact JSON between segments. RECON is fully target-local: privilege context (pctx) and export surface (exports) come from deterministic CLIs, threat modeling is a compact threats[] discipline, and the consumer-tree/sibling scan is retired (export = entry point). Keeps all audit discipline (audit-runner/audit-tools enforcement, schema gates, sanitizer confirmation) while eliminating the coordinator's session-longevity token tax.
+description: >-
+  Leaderless C/C++/Shell/Python code audit pipeline driven by the DSH workflow
+  tool. Use for full-pipeline audits (RECON→HUNT→GAPFIL→VALIDATE→CHAIN→REPORT;
+  TRACE merged into HUNT, 2026-08-21) that must NOT hold a long-lived
+  coordinator session — the script audit-pipeline.js is read from disk and
+  passed as the workflow script parameter each call, every stage runs as a
+  fresh workflow subagent, and the caller only holds compact JSON between
+  segments. RECON is fully target-local: privilege context (pctx) and export
+  surface (exports) come from deterministic CLIs, threat modeling is a compact
+  threats[] discipline, and the consumer-tree/sibling scan is retired (export =
+  entry point). Keeps all audit discipline (audit-runner/audit-tools
+  enforcement, schema gates, sanitizer confirmation) while eliminating the
+  coordinator's session-longevity token tax.
 ---
 
 # workflow-audit — DSH workflow 无主-agent 审计流水线
@@ -130,13 +142,13 @@ pctx 是权限上下文的**单一事实源**：段2 VALIDATE 用它喂 attacker
 
 | 阶段 | 形态 | agent 数 | 输出 |
 |---|---|---|---|
-| VALIDATE | parallel, 每 REACHABLE finding 1 个（独立否证 + sanitizer） | ≤6 并发 | 每 finding `{finding_id, status: confirmed\|killed\|env_blocked, technique_used, detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?, kill_reason?, kill_category?}` |
+| VALIDATE | 按 `(file, vuln_class)` 分组, 组 2–3 条（>3 切块; 单条单发）; 组内每 finding 独立实证 | ≤6 并发 | 组 agent 返回 `{validations: [{finding_id, status: confirmed\|killed\|env_blocked, technique_used, detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?, kill_reason?, kill_category?}, ...]}`; 脚本扁平化后按 finding 处理 |
 | CHAIN | 1 个 agent（仅 confirmed>0 时；默认树内链 + 导出契约链步，跨包链在有 `external_context` 时细化） | 1 | `{chains[], summary}` |
 | REPORT | confirmed>0 时 1 个 report agent 补 CVSS；否则纯脚本聚合 | 0-1 | `{findings[], summary}` |
 
 **脚本内条件门禁**（段2）：confirmed → poc_path/run_log/evidence_extracted 必填；killed → kill_reason 必填，且 **export-contract 的 kill 不得命中全通禁止类别**（无消费者/非特权直连/文件权限门/no-gain，命中则 repair ≤2 重派）；env_blocked → kill_reason(阻断原因) 必填；不合格 repair ≤2 次重派。
 
-**段2 返回契约**：`confirmed[]`（每项含完整 finding（含 HUNT trace 字段）+validation）、`killed[]`（VALIDATE 级 kill）、`env_blocked[]`（环境/内核/部署无法本地复现，**≠ 硬 kill**，供段3/人工/LIVE 确认，2026-08-18 新增）、`unreachable[]`（HUNT 判 UNREACHABLE 的 finding，段2 不验证，审计留痕；2026-08-21 替代原 `killed_by_gate[]`）、`gate`、`stats`、`agents`。finding_id 偏差有 positional 兜底，不会丢 finding 字段。
+**段2 返回契约**：`confirmed[]`（每项含完整 finding（含 HUNT trace 字段）+validation）、`killed[]`（VALIDATE 级 kill）、`env_blocked[]`（环境/内核/部署无法本地复现，**≠ 硬 kill**，供段3/人工/LIVE 确认，2026-08-18 新增）、`unreachable[]`（HUNT 判 UNREACHABLE 的 finding，段2 不验证，审计留痕；2026-08-21 替代原 `killed_by_gate[]`）、`gate`、`stats`（含 `groups` 组数）、`agents`。finding_id 偏差有 positional 兜底，不会丢 finding 字段。
 
 **段1 去重（C）**：同一 `file+sink`（行距 ≤10）的跨类同根因 finding 合并为一条（保留证据最全/置信度最高者，`cls_all` 记录全部来源类），防段2 重复 trace/validate。
 
@@ -333,6 +345,7 @@ audit-runner 不在 PATH 时用绝对路径 `/home/xvmo/.local/bin/audit-runner`
   - 全通纪律从 TRACE 平移至 HUNT 判定（导出契约入口默认 REACHABLE 仍成立）；
   - **默认模型继承主 agent 复核**：三脚本仅在 `args.models.*` 显式传入时附加 model/provider；
   - **schema 门禁恢复**：HUNT/VALIDATE 自跑 `audit-runner gate`（合并后契约），段2 用脚本内 `schemaGate()` 替代 workflow `schema` 选项（避免 structured_output null 问题）。
+- **v3.1（完成，2026-08-21）**：**VALIDATE 按文件分组派发**——按 `(file, vuln_class)` 聚合，组 2–3 条（>3 切块；单条单发）；组 agent 返回 `{validations: []}` 后脚本扁平化，现有 gate/repair/聚合逻辑不变；组 null/漏项自动降级单发重派，不丢 finding；`stats.groups` 记录组数。
 - **类空间（已补全 25 键）**：`CLASS_SECTIONS` 覆盖 schema 枚举全部类（除 other）——内存安全 8 + 注入/路径 5（含 shell-injection）+ 权限 4（含 spoofable-identity）+ Python 2（eval-injection/unsafe-deserialization）+ 交叉 5（toctou/race-condition/memory-leak/resource-leak/crypto-weakness/info-disclosure）。RECON 按目标实际适用性从中选 ≥3 类；**不要再传 `classes: [全部键]`**（已废除）。
 - **待办**：
   1. VALIDATE sanitizer 分支已在 libsecurity1 验证（F1/F2/F3 均 sanitizer/repro 确认）✅

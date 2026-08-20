@@ -163,16 +163,52 @@ const reachable = items.filter((f) => f.trace_result === "REACHABLE");
 const unreachable = items.filter((f) => f.trace_result === "UNREACHABLE");
 log(`VALIDATE: ${reachable.length} 个 REACHABLE finding（UNREACHABLE=${unreachable.length} 不验证）, 模型=${MODELS.validate || "继承主agent"}`);
 
-const validateResults = await parallel(reachable.map((f) => () => {
-  const fid = f.id;
-  return agent(`你是 c-exploit（VALIDATE 阶段 Phase 1: EXPLOIT, 代码审计流水线段2, 模型 deliberate disagreement）。
+// ============================================================================
+// VALIDATE 分组派发（2026-08-21 v3.1）:
+//   按 (file, vuln_class) 聚合, 组大小 2-3（>3 按行号切块）, 单条不进组。
+//   组内每条 finding 独立实证（validations[] 契约），复用 HUNT 的按文件聚合思路，
+//   但保留"每个漏洞独立 PoC/证据"纪律。
+// ============================================================================
+function buildValidateGroups(list) {
+  const byKey = new Map();
+  for (const f of list) {
+    const key = `${f.file || "?"}::${f.vuln_class || "?"}`;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(f);
+  }
+  const groups = [];
+  for (const arr of byKey.values()) {
+    arr.sort((a, b) => (a.line || 0) - (b.line || 0));
+    for (let i = 0; i < arr.length; i += 3) groups.push(arr.slice(i, i + 3));
+  }
+  return groups; // 保序: 按 reachable 首次出现顺序
+}
+const validateGroups = buildValidateGroups(reachable);
+log(`VALIDATE 分组: ${validateGroups.length} 组（${reachable.length} 个 finding）`);
+
+// 组提示词构造: 单条返回单对象(兼容旧契约/repair/retry), 多条返回 {validations: []}
+function validatePrompt(group) {
+  const single = group.length === 1;
+  const fids = group.map((x) => x.id);
+  const fidLabel = fids.join("_");
+  const payload = single
+    ? JSON.stringify({ finding: group[0] }, null, 2)
+    : JSON.stringify({ findings: group }, null, 2);
+  const outputContract = single
+    ? `{finding_id, status: confirmed|killed|env_blocked, technique_used: asan|ubsan|valgrind|minimal-repro|manual-review,
+ detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?,
+ kill_reason?, kill_category?, refinement_attempts?}`
+    : `{validations: [{finding_id, status: confirmed|killed|env_blocked, technique_used: asan|ubsan|valgrind|minimal-repro|manual-review,
+   detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?,
+   kill_reason?, kill_category?, refinement_attempts?}, ...]}`;
+  return `你是 c-exploit（VALIDATE 阶段 Phase 1: EXPLOIT, 代码审计流水线段2, 模型 deliberate disagreement）。
 
 先 read ${BRIEFS.exploit} 与 ${CODE_AUDIT} §6 确认与否证纪律, 再开始。
 
-finding 待验证（HUNT REACHABLE, 含结构化 trace 字段）:
-${JSON.stringify({ finding: f }, null, 2)}
+${single ? "finding 待验证（HUNT REACHABLE, 含结构化 trace 字段）:" : "组内 findings 待验证（HUNT REACHABLE, 含结构化 trace 字段）; 每条 finding **独立**实证:"}
+${payload}
 目标: ${target}
-产物目录: ${runDir}/validate/${fid}/ （先 mkdir -p）
+产物目录: ${fids.map((fid) => `${runDir}/validate/${fid}/`).join(" / ")} （先 mkdir -p）
 
 ${discipline}
 ${exportsBlock}
@@ -198,6 +234,7 @@ ${tricksBlock}
        （如 root 守护进程转发非特权请求）时, 文件权限门被中介 euid 绕过, 库缺鉴权校验即真漏洞）;
      - "no-gain / KILL-3 / 能写就直改"（仅当**调用者已具备与 sink 同等的写权限**时才成立;
        全通模型下非特权用户无写权限, 写权限在中介手里而中介信任库 → no-gain 不成立）;
+${single ? "" : "   **组内独立纪律**: 同一文件≠同一根因——每条 finding 必须独立走可达性挑战/否证/repro,\n   不得交叉引用另一条的证据结论, 不得把多条合并成一个结论; 产物各写各的 validate/<fid>/。"}
 2) 否证脚本 exit 0（finding 被证伪）→ status: killed + kill_reason: <具体原因>
 3) 再写 SELF-CONTAINED repro（只提取自目标, 绝不编译整个项目）:
    C/C++: gcc -g -fsanitize=address,undefined repro.c -o repro && ./repro
@@ -206,22 +243,81 @@ ${tricksBlock}
    valgrind invalid read / UBSAN shift exponent ...
 5) 记录 build_config（完整编译命令）+ sanitizer_result（原始输出片段）+ run_log（exit code）+
    evidence_extracted（崩溃回溯/泄漏数据/权限变化）
-6) 产物写 ${runDir}/validate/${fid}/（repro 源 + 编译产物 + 输出日志）
-7) 权威校验: audit-runner gate --stage validation 对输出校验（casefile.py validate 包装）
+6) 产物写 ${fids.map((fid) => `${runDir}/validate/${fid}/`).join(" / ")}（每条 finding 独立目录: repro 源 + 编译产物 + 输出日志）
+7) 权威校验: 对每条 finding 跑 audit-runner gate --stage validation --run-dir ${runDir} --output ${runDir}/validate/<fid>/validation.json
+   （casefile.py validate 包装; 需 AUTHORITATIVE PASS; audit-runner 不在 PATH 用 ${AUDIT_RUNNER_FALLBACK}）
 8) 无法本地复现（需硬件/内核/网络对端/特定部署）→ status: env_blocked + kill_reason: <阻断原因>
    （**环境 blocked, 区别于硬 KILL**: 段2 返回独立 env_blocked[] 供段3/人工/LIVE 确认, 不进 killed）;
    注意: 对 export-contract finding, "本机/本环境无法复现"是 env_blocked 而非 killed, 不得据此否证。
 
 返回 JSON（严格按契约）:
-{finding_id, status: confirmed|killed|env_blocked, technique_used: asan|ubsan|valgrind|minimal-repro|manual-review,
- detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?,
- kill_reason?, kill_category?, refinement_attempts?}
-条件: confirmed → poc_path/run_log/evidence_extracted 必填; killed → kill_reason 必填;
+${outputContract}
+${single ? "条件:" : "条件（每条）:"} confirmed → poc_path/run_log/evidence_extracted 必填; killed → kill_reason 必填;
       env_blocked → kill_reason(阻断原因) 必填。
+${single ? "" : "validations 数组必须覆盖组内每个 finding_id, 每个元素恰好一条; 顺序不限。"}
 **输出格式铁律（2026-08-20, 违反即判失败）**: 最终回复必须是**一个裸 JSON 对象**——不要 Markdown 代码块围栏（\`\`\`json ... \`\`\`），不要 \`\`\` 或 \`\`\`json 包裹，不要前后缀说明文字。
-**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`,
-    { label: `validate:${fid}`, phase: "validate", ...(MODELS.validate ? { model: MODELS.validate } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson);
+**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`;
+}
+
+function normalizeValidationRaw(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (raw && Array.isArray(raw.validations)) return raw.validations;
+  if (raw && raw.finding_id) return [raw];
+  return null;
+}
+
+// 主派发: 每组合并 1 个 agent
+const groupResults = await parallel(validateGroups.map((group) => {
+  const fids = group.map((x) => x.id);
+  const fidLabel = fids.join("_");
+  return () => agent(validatePrompt(group),
+    { label: `validate:${fidLabel}`, phase: "validate", ...(MODELS.validate ? { model: MODELS.validate } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson);
 }));
+
+// 扁平化 + 覆盖校验 + 降级重派
+const flatValidations = [];
+const failedGroups = [];
+const missingRetry = [];
+for (let gi = 0; gi < validateGroups.length; gi++) {
+  const group = validateGroups[gi];
+  const raw = groupResults[gi];
+  const arr = normalizeValidationRaw(raw);
+  if (!arr) { failedGroups.push(group); continue; }
+  const foundIds = new Set();
+  for (const v of arr) {
+    if (v && v.finding_id) {
+      foundIds.add(v.finding_id);
+      flatValidations.push(v);
+    }
+  }
+  for (const f of group) {
+    if (!foundIds.has(f.id)) missingRetry.push(f);
+  }
+}
+let retries = 0;
+if (failedGroups.length || missingRetry.length) {
+  const seen = new Set();
+  const targets = [].concat(...failedGroups, ...missingRetry)
+    .filter((f) => f && f.id && !seen.has(f.id) && (seen.add(f.id), true));
+  if (targets.length) {
+    retries++;
+    log(`VALIDATE 降级重派: ${targets.length} 个 finding（整组 null=${failedGroups.length}, 漏项=${missingRetry.length}）`);
+    const retryResults = await parallel(targets.map((f) => () =>
+      agent(validatePrompt([f]),
+        { label: `validate-retry:${f.id}`, phase: "validate", ...(MODELS.validate ? { model: MODELS.validate } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson)
+    ));
+    for (const raw of retryResults) {
+      const arr = normalizeValidationRaw(raw);
+      if (arr) flatValidations.push(...arr);
+    }
+  }
+}
+
+// 对齐 reachable 顺序（保持 positional 兜底有效）+ 按 finding_id 去重（防组内重复返回）
+const reachableIdx = new Map(reachable.map((f, i) => [f.id, i]));
+flatValidations.sort((a, b) => (reachableIdx.get(a.finding_id) ?? 1e9) - (reachableIdx.get(b.finding_id) ?? 1e9));
+const seenVal = new Set();
+const validateResults = flatValidations.filter((v) => v && v.finding_id && !seenVal.has(v.finding_id) && (seenVal.add(v.finding_id), true));
 
 // ============================================================================
 // 条件门禁（agent() schema 不支持 if/then — 脚本内二次检查 + repair ≤2）
@@ -388,6 +484,6 @@ return {
     gate_fail: gateFail.map((v) => ({ finding_id: v.finding_id, issues: checkValidation(v, pairOf(v)) })),
     all_pass_forbidden: ALL_PASS_FORBIDDEN,
   },
-  stats: { reachable: reachable.length, unreachable: unreachable.length, confirmed: confirmed.length, killed: killed.length, env_blocked: envBlocked.length, requires_external_verify: 0 },
-  agents: { validate: validations.length, started: reachable.length + repairs },
+  stats: { reachable: reachable.length, unreachable: unreachable.length, groups: validateGroups.length, confirmed: confirmed.length, killed: killed.length, env_blocked: envBlocked.length, requires_external_verify: 0 },
+  agents: { validate: validations.length, started: validateGroups.length + retries + repairs },
 };
