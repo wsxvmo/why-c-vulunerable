@@ -34,7 +34,7 @@ description: >-
      ↓ return {findings[], coverage}          ← 主 agent 过目/干预点
 段2 workflow: VALIDATE                       ← validate.js（v3 已实现; TRACE 已并入段1 HUNT）
      ↓ return {confirmed[], killed[], env_blocked[], unreachable[]}
-段3 workflow: CHAIN → REPORT → LEDGER        ← chain-report.js（v2 已实现）
+段3 workflow: CHAIN → REPORT → LEDGER        ← chain-report.js（v3 已实现; 消费 v3 confirmed[] 扁平索引）
      ↓ return {report, ledger}               ← 最终交付 + casefile 台账
 ```
 

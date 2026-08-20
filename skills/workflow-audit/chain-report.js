@@ -2,6 +2,11 @@
 // ============================================================================
 // DSH workflow 无主-agent 审计流水线 · 段3（无 fs 调度脚本，纯编排）
 //
+// 2026-08-21 v3: 适配 auditor+tracer 合并与 VALIDATE 分组 —— confirmed[] 是段2 返回的
+//   扁平索引（finding 内含 trace 字段）, 没有独立 trace 对象 / trace_path; 直接消费
+//   finding_id/vuln_class/file/line/sink/entry_point/attacker_model/impact/evidence/
+//   reachability_basis/poc_path。
+//
 // 调用方式（主 agent read 本文件后作为 script 参数传入）:
 //   workflow({
 //     meta: {name: "code-audit-segment3",
@@ -13,7 +18,7 @@
 //
 // args 契约:
 //   target          [必填] 目标源码绝对路径
-//   confirmed       [必填] 段2 返回的 confirmed[]（每个含 finding+trace+validation）
+//   confirmed       [必填] 段2 返回的 confirmed[]（扁平索引, 每个含 finding（内含 HUNT trace 字段）+validation, 无独立 trace 对象）
 //   coverage        [可选] 段1 返回的 coverage[]（补进报告）
 //   privilege_ctx   [可选] 段1 返回的 privilege_ctx（CVSS/severity 的确定性权限输入, 单一事实源）
 //   external_context [可选] 审计员显式提供的生态知识（跨包链才启用, 非扫描）
