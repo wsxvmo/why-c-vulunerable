@@ -65,19 +65,19 @@ const exportEntries = exports_.filter((e) => e && e.kind && e.kind !== "internal
 const exportsBlock = (() => {
   const lines = [];
   if (exportEntries.length) {
-    lines.push(`\n## 目标导出面（RECON 产出, 导出即入口点）\n以下导出符号无树内调用方, 属"设计承诺的外部调用面"（kind=intended 公开 API / accidental 符号表带出）:\n${exportEntries.map((e) => `- ${e.symbol} @ ${e.file}:${e.line} (kind=${e.kind})`).join("\n")}`);
+    lines.push(`\n## Target export surface (RECON output; export = entry point)\nThe following exported symbols have no in-tree callers and form a "designed external call surface" (kind=intended public API / accidental exported via symbol table):\n${exportEntries.map((e) => `- ${e.symbol} @ ${e.file}:${e.line} (kind=${e.kind})`).join("\n")}`);
   } else if (exports_.length) {
-    lines.push(`\n## 目标导出面（RECON 产出）\n${exports_.length} 个导出符号, 均已有树内调用方或有 internal 限定（本 finding 若触及导出 API 按树内路径判定）。`);
+    lines.push(`\n## Target export surface (RECON output)\n${exports_.length} exported symbols, all with in-tree callers or internal-only (if this finding touches an exported API, judge it by the in-tree path).`);
   }
   // 全通纪律（2026-08-18）: "默认消费者树全通"的结构化语义 — 导出契约入口默认存在消费者,
   // 且消费者可能是高权限中介（root 守护进程转发非特权用户请求）。这条必须传给 VALIDATE,
   // 否则 VALIDATE 会回退到"非特权直连/无消费者"的保守模型, 与全通相悖（F3 实证）。
   if (exportEntries.length) {
-    lines.push(`\n## 全通语义（默认消费者树全通, 2026-08-18）\n上述导出符号按"设计承诺的外部调用面"处理: **默认存在消费者, 且消费者可能是高权限中介**（如 root 守护进程转发非特权用户请求）。attacker_model 不得回退为"需要 out-of-tree 特权消费者"; 无 external_context 时亦不得以"无消费者/非特权直连"降级攻击者模型、不得以此类推理 kill（详见 VALIDATE 纪律与脚本门禁）。`);
+    lines.push(`\n## All-pass semantics (default consumer-tree all-pass)\nThe export symbols above are treated as a "designed external call surface": **consumers default to existing, and they may be privileged intermediaries** (e.g. a root daemon forwarding unprivileged user requests). The attacker_model must NOT fall back to "needs an out-of-tree privileged consumer"; without external_context you must NOT downgrade the attacker model or kill on the grounds of "no consumer / unprivileged direct" (see VALIDATE rules and the script gate).`);
   }
-  lines.push(`\n## 权限上下文（preflight pctx 确定性产出, 单一事实源）\nprivilege_context=${privilegeCtx.privilege_context} (trigger=${privilegeCtx.trigger_context || "unknown"}, confidence=${privilegeCtx.evidence_confidence || "low"})`);
+  lines.push(`\n## Privilege context (deterministic preflight pctx output, single source of truth)\nprivilege_context=${privilegeCtx.privilege_context} (trigger=${privilegeCtx.trigger_context || "unknown"}, confidence=${privilegeCtx.evidence_confidence || "low"})`);
   if (externalContext) {
-    lines.push(`\n## 外部生态知识（审计员显式提供, 非扫描结果）\n${externalContext}`);
+    lines.push(`\n## External ecosystem knowledge (explicitly provided by the auditor; NOT a scan result)\n${externalContext}`);
   }
   return lines.join("\n");
 })();
@@ -85,7 +85,7 @@ const exportsBlock = (() => {
 // 段1 RECON 提炼的经验前馈注入块（调用方从段1 返回的 tricks_injection 转发）
 const tricksInjection = args.tricks_injection || "";
 const tricksBlock = tricksInjection
-  ? `\n## 经验前馈（历史复盘注入, 先读再干, 按此方向优先排查）\n${tricksInjection}`
+  ? `\n## Experience Feed-Forward (injected from past post-mortems; read first, prioritize these directions)\n${tricksInjection}`
   : "";
 
 // 段1 findings 无 id — 分配稳定 id（F1..Fn），validate 以 finding_id 关联
@@ -115,18 +115,18 @@ const MODELS = {
   validate: (args.models && args.models.validate) || null,
 };
 
-const discipline = `## 铁律（不可违反）
-1. 绝不编译目标项目本身; 只编译从目标提取的自包含 repro 文件。
-2. 禁用裸 joern / joern-scan / codebase-memory-mcp, 必须经封装:
-   - CPG 查询: audit-runner cpg query --cpg <cpg> --file <q.sc>
-   - taint 模板: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
-   - 若 audit-runner 不在 PATH, 用绝对路径: ${AUDIT_RUNNER_FALLBACK}
-3. 空结果（仅 INFO 行）→ 转 grep 兜底, 不重试白等。
-4. 产物写到 ${runDir} 下对应子目录（先 mkdir -p）。
-5. 结论必须逐跳验证: read/grep 确认每跳真实存在、无同名碰撞、类型匹配。
-6. CPG 私有副本（fork, 并行防串行）: 先查 CPG 大小, 若 ≤100MB 运行
-   audit-runner cpg fork --src ${cpg} --n 1 --dir ${runDir}/cpg-forks/ 取私有副本,
-   之后所有 cpg query 一律用私有副本（并行 VALIDATE 免 flock 排队）; >100MB 或 fork 失败用共享 CPG。`;
+const discipline = `## Non-Negotiables (iron rules)
+1. NEVER compile the target project; compile only self-contained repro files extracted from the target.
+2. Raw joern / joern-scan / codebase-memory-mcp are BANNED — go through the wrappers:
+   - CPG query:  audit-runner cpg query --cpg <cpg> --file <q.sc>
+   - taint template: cpg.call.name("<sink>").reachableBy(cpg.method.name("<entry>").parameter)
+   - If audit-runner is not on PATH, use the absolute path: ${AUDIT_RUNNER_FALLBACK}
+3. Empty result (INFO-only lines) -> fall back to grep; do not retry and idle-wait.
+4. Write artifacts under ${runDir} subdirectories (mkdir -p first).
+5. Every conclusion must be verified hop-by-hop: read/grep to confirm each hop is real, no name collisions, types match.
+6. Private CPG copy (fork, parallel to avoid serialization): check the CPG size; if <=100MB run
+   audit-runner cpg fork --src ${cpg} --n 1 --dir ${runDir}/cpg-forks/ for a private copy,
+   then use it for all cpg queries (parallel VALIDATE avoids flock queuing); if >100MB or fork fails, use the shared CPG.`;
 
 // ---- 简化内联 schema（VALIDATE 返回仍走 parseAgentJson + 脚本内 schemaGate 门禁）----
 const VALIDATION_SCHEMA = {
@@ -201,62 +201,67 @@ function validatePrompt(group) {
     : `{validations: [{finding_id, status: confirmed|killed|env_blocked, technique_used: asan|ubsan|valgrind|minimal-repro|manual-review,
    detection_method, build_config?, sanitizer_result?, poc_path?, run_log?, evidence_extracted?,
    kill_reason?, kill_category?, refinement_attempts?}, ...]}`;
-  return `你是 c-exploit（VALIDATE 阶段 Phase 1: EXPLOIT, 代码审计流水线段2, 模型 deliberate disagreement）。
+  return `You are a c-exploit (VALIDATE stage Phase 1: EXPLOIT, code audit pipeline, segment 2; deliberate disagreement).
 
-先 read ${BRIEFS.exploit} 与 ${CODE_AUDIT} §6 确认与否证纪律, 再开始。
+## Glossary
+- deliberate disagreement: you are the pipeline's independent second opinion on HUNT's trace fields — treat them as hypotheses to challenge, not verdicts.
+- all-pass: exported API surfaces are assumed to have consumers by default (possibly privileged intermediaries).
+- export-contract: reachability_basis=export-contract => default REACHABLE; you may NOT kill on "no consumer / unprivileged direct / file-mode gate / no-gain".
 
-${single ? "finding 待验证（HUNT REACHABLE, 含结构化 trace 字段）:" : "组内 findings 待验证（HUNT REACHABLE, 含结构化 trace 字段）; 每条 finding **独立**实证:"}
+## Output contract (return this JSON; shown first on purpose)
+${outputContract}
+
+## Input
+${single ? "Finding to validate (HUNT REACHABLE, carries structured trace fields):" : "Findings in group to validate (HUNT REACHABLE, carry structured trace fields); validate each finding **independently**:"}
 ${payload}
-目标: ${target}
-产物目录: ${fids.map((fid) => `${runDir}/validate/${fid}/`).join(" / ")} （先 mkdir -p）
+Target: ${target}
+Artifact directories: ${fids.map((fid) => `${runDir}/validate/${fid}/`).join(" / ")}  (mkdir -p first)
+
+## Setup
+First read ${BRIEFS.exploit} and §6 of ${CODE_AUDIT} (confirmation & disconfirmation discipline), then start.
 
 ${discipline}
 ${exportsBlock}
 ${tricksBlock}
 
-执行顺序（铁律）:
-1) **独立可达性挑战（2026-08-21 TRACE 并入 HUNT 后的补偿, 必做）**:
-   HUNT 的 trace_result/call_chain/data_flow/defenses_checked/reachability_basis 是**待挑战假设**,
-   不是定论。VALIDATE 是流水线唯一的独立第二视角——**不要盲信 HUNT 的 trace 字段**:
-   自己 read sink、独立走一遍 entry→sink 链、独立检查每跳与防御（可用 audit-runner cpg query / grep 兜底）。
-   否证**聚焦"机制能否真触发"**（输入/防御/环境前置是否成立）;
-   - 若发现链被 HUNT 标错（实际不可达）→ status=killed, kill_category=unreachable_confirmed,
-     kill_reason=<具体机制否证, 如 "HUNT 链第 N 跳实际无调用关系/输入被常量截断">;
-   - 若机制本身在目标内静态/确定性不可触发（路径常量对调不影响实际部署、sink 无数据流、
-     防御真实存在且不可绕过、目标自身写路径无法产出该输入）→ status=killed,
-     kill_category=mechanism_disproven;
-   - **全通纪律（不可违反, 2026-08-18）**: 对 reachability_basis=export-contract 的 finding,
-     **禁止**以下列事实做否证前置或 kill 理由——它们都在重新引入"消费者不存在/非特权直连"假设,
-     与"默认消费者树全通"相悖（F3 实证）:
-     - "无树外消费者 / 无 in-tree 调用者 / 无特权消费者 / requires out-of-tree consumer"
-       （消费方是外部事实, HUNT 已按 export-contract 判 REACHABLE, 默认存在消费者）;
-     - "非特权直连 → 文件权限门 EACCES → 触发不可能"（调用者身份由消费者决定; 存在高权限中介
-       （如 root 守护进程转发非特权请求）时, 文件权限门被中介 euid 绕过, 库缺鉴权校验即真漏洞）;
-     - "no-gain / KILL-3 / 能写就直改"（仅当**调用者已具备与 sink 同等的写权限**时才成立;
-       全通模型下非特权用户无写权限, 写权限在中介手里而中介信任库 → no-gain 不成立）;
-${single ? "" : "   **组内独立纪律**: 同一文件≠同一根因——每条 finding 必须独立走可达性挑战/否证/repro,\n   不得交叉引用另一条的证据结论, 不得把多条合并成一个结论; 产物各写各的 validate/<fid>/。"}
-2) 否证脚本 exit 0（finding 被证伪）→ status: killed + kill_reason: <具体原因>
-3) 再写 SELF-CONTAINED repro（只提取自目标, 绝不编译整个项目）:
+## Execution order (iron rules)
+1) **Independent reachability challenge (mandatory)**:
+   HUNT's trace_result/call_chain/data_flow/defenses_checked/reachability_basis are hypotheses, not conclusions.
+   As VALIDATE you are the pipeline's only independent second view — do NOT trust HUNT's trace fields blindly:
+   read the sink yourself, walk entry->sink independently, and check every hop and defense yourself (audit-runner cpg query / grep fallback OK).
+   Focus disconfirmation on "can the mechanism actually fire" (do inputs/defenses/environment prerequisites hold?).
+   - if you find the chain mislabeled by HUNT (actually unreachable) -> status=killed, kill_category=unreachable_confirmed,
+     kill_reason=<specific mechanism disproof, e.g. "HUNT chain hop N has no real call relation / input truncated by a constant">;
+   - if the mechanism is statically/deterministically untriggerable within the target (path-constant swap doesn't affect real deployment, sink has no data flow,
+     a real non-bypassable defense exists, the target's own write path cannot produce that input) -> status=killed, kill_category=mechanism_disproven;
+   - **All-pass discipline (mandatory)**: for findings with reachability_basis=export-contract, the following are FORBIDDEN as disconfirmation preconditions or kill reasons —
+     they re-introduce the "consumer absent / unprivileged direct" assumption and contradict default consumer-tree all-pass:
+     - "no out-of-tree consumer / no in-tree caller / no privileged consumer / requires out-of-tree consumer"
+       (the consumer side is an external fact; HUNT already marked export-contract REACHABLE — consumers default to existing);
+     - "unprivileged direct -> file-mode gate EACCES -> trigger impossible" (caller identity is decided by the consumer; a privileged intermediary
+       (e.g. a root daemon forwarding unprivileged requests) bypasses the file-mode gate with its euid, so a library missing auth checks is a real bug);
+     - "no-gain / can write directly" (only holds when the caller already has write privilege equal to the sink;
+       under all-pass the unprivileged user has no write privilege — the intermediary holds it and trusts the library -> no-gain does not hold);
+${single ? "" : "   **Per-item independence within a group**: same file != same root cause — each finding must independently go through the reachability challenge/disproof/repro,\n   must not cross-reference another item's evidence or merge multiple items into one conclusion; write artifacts to separate validate/<fid>/ dirs."}
+2) Disproof script exits 0 (finding disproven) -> status: killed + kill_reason: <specific reason>
+3) Then write a SELF-CONTAINED repro (extract only from the target; NEVER compile the whole project):
    C/C++: gcc -g -fsanitize=address,undefined repro.c -o repro && ./repro
-   Python: python3 repro.py / Shell: bash repro.sh（解释执行, 无需 gcc）
-4) 确认 = sanitizer/runtime 错误指向 sink: ASAN heap-buffer-overflow / use-after-free /
+   Python: python3 repro.py / Shell: bash repro.sh (interpreted, no gcc)
+4) Confirmation = sanitizer/runtime error pointing at the sink: ASAN heap-buffer-overflow / use-after-free /
    valgrind invalid read / UBSAN shift exponent ...
-5) 记录 build_config（完整编译命令）+ sanitizer_result（原始输出片段）+ run_log（exit code）+
-   evidence_extracted（崩溃回溯/泄漏数据/权限变化）
-6) 产物写 ${fids.map((fid) => `${runDir}/validate/${fid}/`).join(" / ")}（每条 finding 独立目录: repro 源 + 编译产物 + 输出日志）
-7) 权威校验: 对每条 finding 跑 audit-runner gate --stage validation --run-dir ${runDir} --output ${runDir}/validate/<fid>/validation.json
-   （casefile.py validate 包装; 需 AUTHORITATIVE PASS; audit-runner 不在 PATH 用 ${AUDIT_RUNNER_FALLBACK}）
-8) 无法本地复现（需硬件/内核/网络对端/特定部署）→ status: env_blocked + kill_reason: <阻断原因>
-   （**环境 blocked, 区别于硬 KILL**: 段2 返回独立 env_blocked[] 供段3/人工/LIVE 确认, 不进 killed）;
-   注意: 对 export-contract finding, "本机/本环境无法复现"是 env_blocked 而非 killed, 不得据此否证。
+5) Record build_config (full compile command) + sanitizer_result (raw output snippet) + run_log (exit code) +
+   evidence_extracted (crash backtrace / leaked data / privilege change)
+6) Write artifacts to ${fids.map((fid) => `${runDir}/validate/${fid}/`).join(" / ")} (per-finding dir: repro source + compiled artifact + output log)
+7) Authoritative check: for each finding run audit-runner gate --stage validation --run-dir ${runDir} --output ${runDir}/validate/<fid>/validation.json
+   (casefile.py validate wrapper; needs AUTHORITATIVE PASS; if audit-runner is not on PATH use ${AUDIT_RUNNER_FALLBACK})
+8) Cannot reproduce locally (needs hardware/kernel/network peer/specific deployment) -> status: env_blocked + kill_reason: <blocking reason>
+   (environment-blocked, NOT a hard kill: segment 2 returns a separate env_blocked[] for segment 3/human/LIVE confirmation; it never goes into killed[]);
+   note: for export-contract findings, "cannot reproduce in this local environment" is env_blocked, not killed — do not disconfirm on that basis.
 
-返回 JSON（严格按契约）:
-${outputContract}
-${single ? "条件:" : "条件（每条）:"} confirmed → poc_path/run_log/evidence_extracted 必填; killed → kill_reason 必填;
-      env_blocked → kill_reason(阻断原因) 必填。
-${single ? "" : "validations 数组必须覆盖组内每个 finding_id, 每个元素恰好一条; 顺序不限。"}
-**输出格式铁律（2026-08-20, 违反即判失败）**: 最终回复必须是**一个裸 JSON 对象**——不要 Markdown 代码块围栏（\`\`\`json ... \`\`\`），不要 \`\`\` 或 \`\`\`json 包裹，不要前后缀说明文字。
-**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`;
+Return the JSON contract shown at the top.
+${single ? "" : "The validations array must cover every finding_id in the group, exactly one element each; order irrelevant."}
+**Output format rule**: the final reply must be ONE bare JSON object — no markdown code fences (\`\`\`json ... \`\`\`), no prefix/suffix prose.
+**Output mechanism rule**: do NOT call structured_output / output_schema / any JSON-output tool; the final assistant message must be a directly JSON.parse-able bare JSON object.`;
 }
 
 function normalizeValidationRaw(raw) {
@@ -331,9 +336,17 @@ const validateResults = flatValidations.filter((v) => v && v.finding_id && !seen
 //   - no-gain 类: KILL-3 / 能写就直改（仅当调用者已具备 sink 同等写权限才成立）
 // 命中 → 记入 gate 问题, repair 重派, 让 agent 在全通语义下重写 kill_reason 或转 env_blocked。
 const ALL_PASS_FORBIDDEN = [
-  "无树外消费者", "无 in-tree 调用者", "无特权消费者", "no in-tree consumer",
-  "no consumer", "requires out-of-tree consumer", "非特权直连", "unprivileged direct",
-  "no-gain", "KILL-3", "能写就直改", "文件权限门", "file-mode gate",
+  // 全通禁止的 kill 推理（中文 + 英文词条, 兼容中英文模型输出）:
+  // 消费者缺失类
+  "无树外消费者", "无 in-tree 调用者", "无特权消费者", "无消费者",
+  "no external consumer", "no in-tree caller", "no privileged consumer", "no consumer",
+  "no out-of-tree consumer", "requires out-of-tree consumer", "requires external consumer",
+  // 非特权直连类
+  "非特权直连", "unprivileged direct", "non-privileged direct", "unprivileged connection",
+  // 文件权限门类
+  "文件权限门", "file-mode gate", "file permission gate", "EACCES", "permission denied",
+  // no-gain / 能写就直改类
+  "no-gain", "KILL-3", "能写就直改", "can write directly", "direct write", "write directly",
 ];
 
 function allPassViolation(v, pair) {
@@ -401,14 +414,14 @@ while (repairs < MAX_REPAIRS) {
   repairs++;
   log(`VALIDATE repair #${repairs}: ${bad.map((v) => v.finding_id).join(", ")}`);
   const fixed = await parallel(bad.map((v) => () =>
-    agent(`你的 VALIDATE 输出未过条件门禁（缺口: ${checkValidation(v, pairOf(v)).join("; ")}）。
-补上缺失字段（必要时重跑 repro 补证据, 已写产物勿重写）; 若命中"全通禁止"类 kill, 请在
-"默认消费者树全通"语义下重写 kill_reason（聚焦机制本身）或改 status=env_blocked:
+    agent(`Your VALIDATE output did not pass the conditional gate (gaps: ${checkValidation(v, pairOf(v)).join("; ")}).
+Fill in the missing fields (re-run the repro for evidence if needed; don't rewrite artifacts already written); if you hit an "all-pass forbidden" kill, rewrite
+kill_reason under "default consumer-tree all-pass" semantics (focus on the mechanism itself) or switch to status=env_blocked:
 ${JSON.stringify(v, null, 2)}
-返回同一契约 JSON（confirmed → poc_path/run_log/evidence_extracted; killed → kill_reason;
-      env_blocked → kill_reason 阻断原因）。
-**输出格式铁律（2026-08-20, 违反即判失败）**: 最终回复必须是**一个裸 JSON 对象**——不要 Markdown 代码块围栏（\`\`\`json ... \`\`\`），不要 \`\`\` 或 \`\`\`json 包裹，不要前后缀说明文字。
-**输出机制铁律（2026-08-20）**: 不要调用 structured_output / output_schema / JSON 输出工具，不要使用任何工具来输出结果；最终一条 assistant 消息必须是可直接 JSON.parse 的裸 JSON 对象。`,
+Return the same contract JSON (confirmed -> poc_path/run_log/evidence_extracted; killed -> kill_reason;
+      env_blocked -> kill_reason blocking reason).
+**Output format rule**: final reply must be ONE bare JSON object — no markdown code fences, no prefix/suffix prose.
+**Output mechanism rule**: do NOT call structured_output / output_schema / any JSON-output tool; the final assistant message must be a directly JSON.parse-able bare JSON object.`,
       { label: `validate-repair:${v.finding_id}`, phase: "validate", ...(MODELS.validate ? { model: MODELS.validate } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) }).then(parseAgentJson)
   ));
   validations = validations.map((old) => {

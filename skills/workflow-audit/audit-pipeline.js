@@ -104,28 +104,28 @@ const CLASS_SECTIONS = {
   "access-control": "§3.1 access-control (CWE-284/862/863)",
   "privilege-mgmt": "§3.2 privilege-mgmt (CWE-250/269/271/272/273)",
   "permission-assignment": "§3.3 permission-assignment (CWE-732/276)",
-  "spoofable-identity": "§3.1a spoofable-identity (CWE-287/269) — 身份信任边界, 命中即升优先级",
+  "spoofable-identity": "§3.1a spoofable-identity (CWE-287/269) — identity trust boundary; bump priority on hit",
   "shell-injection": "§5.1 shell-injection (CWE-78)",
   "eval-injection": "§6.1 eval-injection (CWE-95/94)",
   "unsafe-deserialization": "§6.2 unsafe-deserialization (CWE-502)",
-  "toctou": "§2.5 race-condition / toctou (CWE-362/367) — 独立键, 与 race-condition 共享方法论",
+  "toctou": "§2.5 race-condition / toctou (CWE-362/367) — separate key, shares methodology with race-condition",
   "memory-leak": "§7.1 resource-leak / memory-leak (CWE-401/404/775)",
   "resource-leak": "§7.1 resource-leak / memory-leak (CWE-401/404/775)",
   "crypto-weakness": "§7.2 crypto-weakness (CWE-327/328)",
   "info-disclosure": "§7.3 info-disclosure (CWE-200)",
 };
 
-const discipline = `## 铁律（不可违反）
-1. 绝不编译目标项目本身; 只用 read/grep/静态查询/CPG。
-2. 禁用裸 joern / joern-scan / codebase-memory-mcp 命令, 必须经封装（防挂起/防踩坑）:
-   - CPG 构建:      audit-runner cpg build --root <绝对路径>
-   - CPG 查询:      audit-runner cpg query --cpg <cpg> --file <q.sc>   （println/降级已内置）
-   - querydb 扫描:  audit-tools cli scan_cpg --cpg <cpg> --tags <cwe>
+const discipline = `## Non-Negotiables (iron rules)
+1. NEVER compile the target project itself; use only read/grep/static queries/CPG.
+2. Raw joern / joern-scan / codebase-memory-mcp are BANNED — go through the wrappers (prevents hangs / footguns):
+   - CPG build:      audit-runner cpg build --root <abs>
+   - CPG query:      audit-runner cpg query --cpg <cpg> --file <q.sc>   (println/fallback built in)
+   - querydb scan:   audit-tools cli scan_cpg --cpg <cpg> --tags <cwe>
    - codebase-memory: audit-tools cli codebase_query --tool <t> <args...>
-   - 若 audit-runner 不在 PATH, 用绝对路径: ${AUDIT_RUNNER_FALLBACK}
-3. 空结果（仅 INFO 行）→ 转 grep 兜底, 不重试白等。
-4. 产物写到 ${runDir} 下对应子目录（先 mkdir -p）。
-5. 自限: 单 agent 最多查 3 个入口点, 超出部分列入 unchecked 交回, 绝不无限扩展。`;
+   - If audit-runner is not on PATH, use the absolute path: ${AUDIT_RUNNER_FALLBACK}
+3. Empty result (INFO-only lines) -> fall back to grep; do not retry and idle-wait.
+4. Write artifacts under ${runDir} subdirectories (mkdir -p first).
+5. Self-limit: check at most 3 entry points per agent; put the rest in unchecked and hand them back — never expand without bound.`;
 
 // ---- 简化内联 schema（agent() 只支持 type/properties/required/items/enum/const/oneOf）----
 const RECON_SCHEMA = {
@@ -299,88 +299,14 @@ const REQUIRED_FIELDS = ["vuln_class", "file", "line", "sink", "entry_point", "c
 phase("recon");
 log(`RECON: ${target}`);
 
-const recon = await agent(`你是 RECON 协调员（代码审计流水线段1）。
+const recon = await agent(`You are the RECON coordinator (code audit pipeline, segment 1).
 
-先 read ${BRIEFS.harness} 与 ${SKILL_ROOT}/skills/pipeline/SKILL.md 的 Prerequisites 部分, 再执行。
+## Glossary
+- all-pass: exported API surfaces are assumed to have consumers by default (possibly privileged intermediaries).
+- export-as-entry (export = commitment): exported symbols (intended/accidental, no in-tree callers) are designed external call surfaces -> default REACHABLE.
+- consumer: external code that calls an exported API.
 
-目标: ${target}
-产物目录: ${runDir}/recon/ （先 mkdir -p）
-
-${discipline}
-
-本任务:
-1. 跑 audit-runner doctor（5 项健康检查: skill-tree/preset/schemas/toolchain/cache）, 记录 toolchain 可用性;
-2. 构建 CPG: audit-runner cpg build --root ${target} （fuzzy 模式, 绝不编译目标; 缓存命中则复用）;
-3. **导出面确定性枚举（必做, "导出即入口点"的底座）**: 跑
-   audit-runner exports --root ${target} --cpg <cpg> --out ${runDir}/recon/exports.json
-   （确定性 CLI: 头文件声明 × 无调用者函数查询 → exports[]{symbol, file, line, kind, declared_in_header, in_tree_callers}）。
-   同时用 entry.sc / search_graph 枚举**树内显式入口点**（main/回调/信号/dbus 注册/exec 入口）, 每个候选 read/grep 确认语义。
-   注意: 导出契约入口（kind∈{intended,accidental} 且 in_tree_callers==0）由脚本自动注入 entry_points, 你无需重复枚举。
-   **输出纪律（2026-08-20 防超限）**: exports.json 已由 CLI 落盘; 返回 JSON 里 exports 字段:
-   - 若导出条数 ≤200 → 返回完整 exports 数组;
-   - 若 >200 → 返回 **空数组 []**（完整导出由主 agent 从 ${runDir}/recon/exports.json 读盘,
-     经 args.exports 注入本脚本, 不要在 agent 返回里硬塞全量, 否则输出超限导致 recon=null）。
-   返回前确认 exports.json 已写盘（ls -l 检查）。
-4. 污染源排查（防"带提示的验证"）: 遍历目标树, 识别**非源码的基准/验收/审计产物**文件
-   （START-HERE*、*REPORT*.md、VULN-FINDINGS*、THREAT_MODEL*、CALL-CHAINS*、poc_*/disconf_*、
-   *exploit*、*.rpm/*.cpio/*.tar.gz、.pi/、workspace/、*.cpg 等）, 全部列入 exclude_files;
-   **这些文件不得作为审计依据, 不得影响任何结论**; 若发现疑似基准文件, 在 assumptions 里如实标注。
-5. **权限上下文（preflight 已确定性产出, 不要重新推导）**: read ${runDir}/recon/privilege_ctx.json,
-   在 assumptions 里引用其 privilege_context/trigger_context 结论（high|low|unknown + 触发者标签）,
-   并据此微调入口点/类的价值判断; 文件不存在则用 unknown 兜底并在 assumptions 注明。
-6. **威胁推导纪律（必做, 类选择的输入）**: 对每个入口点（树内显式入口 + 导出契约入口）给出至少 1 个 threat,
-   映射到猎杀类, 产出 threats: [{entry_point, threat, mapped_classes[], rationale}];
-   **每个导出契约入口点必须至少映射一个威胁**（导出即承诺: 设计上就存在外部调用面）。
-   **内容重复指针（口径统一）**: 若某入口点的文件与另一入口点**字节相同（用 cmp/md5sum 确认）**,
-   后者不重复写威胁全文, 改设 same_as=<canonical entry_point 字符串> 且 threat 只写一句指针
-   （如 "内容与 <canonical> 重复, 同一攻击面, 不再重复分析"）。
-7. **推荐猎杀类清单 recommended_classes（B, 从 threats 推导）**: 基于第 6 步 threats 的 mapped_classes 聚合,
-   结合语言分布/目标类型/权限上下文, 选**该目标实际适用**的类, 至少 3 个, 每类附一句话 rationale 链到某 threat;
-   - 无 python → 不推 eval-injection/unsafe-deserialization; 无 shell → 不推 shell-injection;
-   - 纯 C/C++ 目标 → 推内存安全类为主; 库目标 → 考虑 access-control/权限类（导出 API 面）;
-   - root 守护进程/DBus 服务 → 推 race-condition/toctou/access-control（结合第 5 步 pctx）。
-8. **候选池扫描（必做, 确定性引擎, 产出 HUNT 的定向候选）**:
-   - **对第 7 步选中的每个类, 跑对应的预写查询资产**（路径 ${SKILL_ROOT}/skills/audit-runner/queries/classes/,
-     文件名为 classes/<class>.sc 或 classes/<class>.grep, 25 类全部有资产）:
-     每个 .sc 资产用 audit-runner cpg query --cpg <cpg> --file ${SKILL_ROOT}/skills/audit-runner/queries/classes/<class>.sc --timeout 200 调用;
-     .grep 资产（shell-injection/eval-injection/unsafe-deserialization）**cd ${target} 后**跑
-     rg -n -f ${SKILL_ROOT}/skills/audit-runner/queries/classes/<class>.grep scripts/
-     （资产内是 scripts/ 相对路径, 必须从目标根跑才解析, 勿在 runDir 跑）;
-     **硬规则: .sc 资产只走 cpg query, .grep 资产只走 rg——绝不互相混用**
-     （cpg query 对 .grep 报 NonForkingScriptRunner 错: 它只接受 joern Scala 资产; .grep 用绝对路径喂 cpg query 也会被 cpg.py 护栏拒绝）;
-     grep 扫 scripts/ 会命中逐字节相同副本（同一命中在多个文件重复出现）: 属预期, 汇总时按内容去重（见下方去重步）;
-     资产文件不存在时回退: 通用 sinks.sc（${QUERIES}/）+ scan_cpg --tags <该类 cwe> + grep 兜底;
-     通用资产也跑: entry.sc / sinks.sc / error_deref.sc（${QUERIES}/ 下）;
-   - 空结果（仅 INFO 行）→ 按资产文件头注释的 grep 兜底模式跑一次 rg 确认, 不重试 joern;
-   - audit-tools cli scan_cpg --cpg <cpg> --tags <cwe>（querydb 全库扫描, 兜底补充）;
-   - 若 ${SKILL_ROOT}/tools/sink_filter.py 存在, 跑 python3 sink_filter.py --cpg <cpg> --out ${runDir}/recon/candidates.json 取 ALERT/HIGH/LOW 三档（产物写 runDir, 纪律块 L113）;
-   - 汇总为 candidate_hits: [{file, line, class, cwe[], tier: ALERT|HIGH|LOW|HIT}], 每条 = 一个真实候选点;
-   - **内容去重（必做, 口径统一, 2026-08-18）**: 汇总后对**共享同一类**的解释型文件（sh/py）用 cmp/md5sum 比对;
-     若两份文件字节相同（如 init-bottom/security_set 与 security_set.sh 逐字节副本）, canonical 文件保留全部真实候选点,
-     副本文件只留 1 条指针 {file, line: 0, class, content_dup_of: <canonical 文件>, md5: <值>}, **不重复列点**;
-     下游**不派副本组 HUNT agent**: 聚合段由脚本确定性把 canonical 组 findings 重贴为本文件路径并入
-     （RECON 的 md5 即派发前复核; 审计只读快照不会中途漂移, 不再重复完整审计）。
-   - **语言分流**: .sh/.py 等解释型文件无 C sink 候选 → 不强行造行号, 其候选由 class_file_map 标注整文件审计;
-   - **零命中也要记录**（该 class 无候选 → 脚本标记 SKIPPED, 不派 agent）。
-   - **注意**: 扫描范围 = 第 7 步推荐的类（RECON 取舍为准, 不强制全量）; 推荐的类必须跑对应资产,
-     不得只用通用 sinks.sc 应付（per-class 资产比通用正则更准）。
-9. class_file_map（审计点标注, 必做, **语义审计点的首选来源**）: 对无 sink 候选的类
-   （权限/授权类 access-control/privilege-mgmt/permission-assignment/spoofable-identity 等
-   "缺某样东西"才成立的类）给出真实审计点 [{class, file, line, note}], note 写清审计方向
-   （如 "导出 API 无授权原语, 检查 getuid/属主/校验"）; 其余无候选类（注入/内存/健壮性类）由脚本
-   2.0b 的"导出即入口点"自动回填缺省审计点（2026-08-18 起覆盖全部推荐类）。
-   **注意**: 每个你推荐了但无 sink 候选的权限类, **必须**在 class_file_map 里给出至少 1 个真实候选点;
-   没给 = 脚本判定该类无审计点, SKIPPED 不派 agent（推荐了却不给点, 会被记录为 RECON 遗漏警告）。
-   缺省候选点可由导出契约入口补齐。
-10. group_priority: 脚本会按"threat 价值 × pctx 权重"给文件排序出确定性默认; 若 RECON 判断某文件优先级与默认不同
-    （默认: scripts/root 执行 > lib/*.c 特权写 > 其他 .c > tests/）, 给出 [{file, rank}], rank 越小越先查。
-11. tricks 经验前馈（原框架硬规则, 必做）: read ${TRICKS} 的"章节 → 适用场景映射"部分,
-    按目标类型选 2-4 个相关章节（如守护进程/DBus → §2 身份信任边界 + §4 深挖技巧;
-    库目标 → §5 差分索引; setuid → §1 攻击面优先级; 补丁密集 → §3 补丁即地图）,
-    提炼 ≤200 字**可操作**的注入块写入 tricks_injection（给出具体检查方向, 不是泛泛而谈）。
-12. 把 recon.json（上述字段）写到 ${runDir}/recon/recon.json。
-
-返回 JSON（严格按契约）:
+## Output contract (return this JSON; shown first on purpose)
 {languages: string[], entry_points: string[], cpg_path: string,
  toolchain: {doctor: string, joern: string, ...}, assumptions: string[],
  privilege_ctx: {privilege_context: high|low|unknown, trigger_context: string, signals: [], evidence_confidence: string},
@@ -388,7 +314,91 @@ ${discipline}
  threats: [{entry_point, threat, mapped_classes[], rationale}],
  recommended_classes: string[], tricks_injection: string, exclude_files: string[],
  candidate_hits: [{file, line, class, cwe[], tier}], class_file_map: [{class, file, line, note}],
- group_priority: [{file, rank}]}`,
+ group_priority: [{file, rank}]}
+
+## Setup
+First read ${BRIEFS.harness} and the Prerequisites section of ${SKILL_ROOT}/skills/pipeline/SKILL.md, then proceed.
+
+Target: ${target}
+Artifact directory: ${runDir}/recon/  (mkdir -p first)
+
+${discipline}
+
+## Core tasks (mandatory)
+1. Run audit-runner doctor (5 health checks: skill-tree/preset/schemas/toolchain/cache); record toolchain availability.
+2. Build the CPG: audit-runner cpg build --root ${target} (fuzzy mode, NEVER compile the target; reuse cache on hit).
+3. **Deterministic export-surface enumeration (mandatory; the basis of "export = entry point")**: run
+   audit-runner exports --root ${target} --cpg <cpg> --out ${runDir}/recon/exports.json
+   (deterministic CLI: header declarations x no-caller function query -> exports[]{symbol, file, line, kind, declared_in_header, in_tree_callers}).
+   Also enumerate **in-tree explicit entry points** (main/callbacks/signals/dbus registrations/exec entries) with entry.sc / search_graph, confirming semantics per candidate via read/grep.
+   Note: export-contract entries (kind in {intended,accidental} and in_tree_callers==0) are injected into entry_points automatically by the script — do not re-enumerate them.
+   **Output discipline (prevents output overrun)**: exports.json is already written to disk by the CLI; for the exports field in the returned JSON:
+   - if the export count is <=200 -> return the full exports array;
+   - if >200 -> return **empty array []** (the main agent reads the full list from ${runDir}/recon/exports.json
+     and re-injects it via args.exports; do NOT stuff the full list into your return, or output overrun makes recon=null).
+   Before returning, confirm exports.json was written (ls -l check).
+4. Pollution scan (prevent "hinted verification"): walk the target tree and identify **non-source benchmark/acceptance/audit artifacts**
+   (START-HERE*, *REPORT*.md, VULN-FINDINGS*, THREAT_MODEL*, CALL-CHAINS*, poc_*/disconf_*,
+   *exploit*, *.rpm/*.cpio/*.tar.gz, .pi/, workspace/, *.cpg, etc.); list all of them in exclude_files.
+   **These files must never be used as audit evidence or influence any conclusion**; if you find suspicious benchmark files, state that honestly in assumptions.
+5. **Privilege context (produced deterministically by preflight — do NOT re-derive)**: read ${runDir}/recon/privilege_ctx.json,
+   reference its privilege_context/trigger_context conclusion (high|low|unknown + trigger label) in assumptions,
+   and use it to tune your value judgment of entry points/classes; if the file is absent, fall back to unknown and note it in assumptions.
+6. **Threat-derivation discipline (mandatory; input to class selection)**: for every entry point (in-tree explicit + export-contract), give at least 1 threat
+   mapped to hunt classes, producing threats: [{entry_point, threat, mapped_classes[], rationale}].
+   **Every export-contract entry point must map to at least one threat** (export = commitment: an external call surface exists by design).
+   **Content-dup pointer (uniform convention)**: if an entry point's file is byte-identical to another entry point's (confirm with cmp/md5sum),
+   do not repeat the full threat text for the latter; set same_as=<canonical entry_point string> and write a one-line threat
+   (e.g. "content identical to <canonical>, same attack surface, not re-analyzed").
+7. **Recommended hunt classes (derived from threats)**: aggregate mapped_classes from step 6,
+   combined with language distribution / target type / privilege context; pick classes actually applicable to THIS target, at least 3, each with a one-line rationale chained to a threat.
+   - no python -> drop eval-injection/unsafe-deserialization; no shell -> drop shell-injection;
+   - pure C/C++ target -> prefer memory-safety classes; library target -> consider access-control/privilege classes (exported API surface);
+   - root daemon / DBus service -> prefer race-condition/toctou/access-control (combined with pctx from step 5).
+8. **Candidate-pool scan (mandatory, deterministic engine — produces HUNT's targeted candidates)**:
+   - **For every class selected in step 7, run its pre-written query asset** (path ${SKILL_ROOT}/skills/audit-runner/queries/classes/,
+     asset file names are classes/<class>.sc or classes/<class>.grep; all 25 classes have assets):
+      each .sc asset via audit-runner cpg query --cpg <cpg> --file ${SKILL_ROOT}/skills/audit-runner/queries/classes/<class>.sc --timeout 200;
+      .grep assets (shell-injection/eval-injection/unsafe-deserialization) via **cd ${target} then**
+      rg -n -f ${SKILL_ROOT}/skills/audit-runner/queries/classes/<class>.grep scripts/
+      (assets use scripts/-relative paths — run from the target root, not runDir);
+      **hard rule: .sc assets only via cpg query, .grep assets only via rg — never mix them**
+      (cpg query on a .grep file reports NonForkingScriptRunner: it only accepts joern Scala assets; feeding a .grep absolute path to cpg query is also blocked by cpg.py's guard);
+      grep over scripts/ will hit byte-identical copies (same hit repeated across files): expected — dedupe by content when aggregating (see the dedup step below);
+      if an asset file is missing, fall back to the generic sinks.sc (${QUERIES}/) + scan_cpg --tags <that class's cwe> + grep;
+      also run the generic assets: entry.sc / sinks.sc / error_deref.sc (under ${QUERIES}/);
+   - Empty result (INFO-only lines) -> run the grep fallback noted in the asset's header comment once to confirm; do not retry joern;
+   - audit-tools cli scan_cpg --cpg <cpg> --tags <cwe> (querydb full-db sweep as a fallback supplement);
+   - if ${SKILL_ROOT}/tools/sink_filter.py exists, run python3 sink_filter.py --cpg <cpg> --out ${runDir}/recon/candidates.json for the ALERT/HIGH/LOW tiers (write artifacts to runDir);
+   - aggregate into candidate_hits: [{file, line, class, cwe[], tier: ALERT|HIGH|LOW|HIT}], each entry = one real candidate point;
+   - **Content dedup (mandatory, uniform convention)**: after aggregation, compare interpreted-language files (sh/py) sharing the same class with cmp/md5sum;
+     if two files are byte-identical (e.g. init-bottom/security_set vs security_set.sh byte-identical copies), the canonical file keeps all real candidate points,
+     the copy keeps only 1 pointer entry {file, line: 0, class, content_dup_of: <canonical file>, md5: <value>} — do NOT duplicate points;
+     downstream does NOT dispatch a HUNT agent for copy groups: the aggregation stage deterministically re-stamps the canonical group's findings onto this file path
+     (RECON's md5 is the pre-dispatch re-check; the audit snapshot is read-only and won't drift mid-run, so no re-audit).
+   - **Language split**: interpreted files (.sh/.py) have no C-sink candidates -> do not force line numbers; mark their candidates in class_file_map as whole-file audits;
+   - **Zero hits must be recorded too** (a class with no candidates -> the script marks it SKIPPED, no agent dispatched).
+   - **Note**: scan scope = the classes recommended in step 7 (RECON decides; not forced to the full set); recommended classes MUST run their per-class assets,
+     do not just satisfy with the generic sinks.sc (per-class assets are more precise than generic regexes).
+9. class_file_map (audit-point annotation, mandatory, **the primary source for semantic audit points**): for classes with no sink candidates
+   (authorization classes like access-control/privilege-mgmt/permission-assignment/spoofable-identity — classes that only hold if "something is missing"),
+   give real audit points [{class, file, line, note}], with note stating the audit direction
+   (e.g. "exported API lacks an authorization primitive; check getuid/ownership/validation").
+   Other candidate-less classes (injection/memory/robustness) are auto-backfilled with default audit points by the script's "export = entry point" rule (covers all recommended classes).
+   **Note**: every recommended class without sink candidates MUST get at least 1 real candidate point in class_file_map;
+   not giving one = the script sees no audit point, marks it SKIPPED, and dispatches no agent (recommending without a point is recorded as a RECON omission warning).
+   Default candidate points may be filled from export-contract entries.
+10. group_priority (optional override): the script computes a deterministic default ordering by "threat value x pctx weight"
+    (default: scripts/ root-exec > lib/*.c privileged-write > other .c > tests/); only if RECON judges a file's priority differs from the default,
+    provide [{file, rank}], smaller rank = checked first.
+11. tricks feed-forward (mandatory): read the scenario-mapping section of ${TRICKS} (the "章节 -> 适用场景映射" part),
+    pick 2-4 relevant sections by target type (e.g. daemon/DBus -> §2 identity trust boundary + §4 deep-dive;
+    library -> §5 diff-index; setuid -> §1 attack-surface priority; patch-dense -> §3 patch-as-map),
+    distill a <=200-char ACTIONABLE injection block into tricks_injection (concrete check directions, not generalities).
+12. Write recon.json (all the fields above) to ${runDir}/recon/recon.json.
+
+Return the JSON contract shown at the top.
+`,
   { label: "recon", phase: "recon", schema: RECON_SCHEMA, ...(MODELS.recon ? { model: MODELS.recon } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) });
 
 if (!recon || !Array.isArray(recon.entry_points) || !recon.cpg_path) {
@@ -424,17 +434,17 @@ log(`HUNT 类选择[${classesMode}]: ${effectiveClasses.join(", ")}${prunedClass
 
 // 污染控制: RECON 标注的非源码产物文件 → HUNT/GAPFIL 提示词显式禁用
 const exclusionBlock = (recon.exclude_files && recon.exclude_files.length)
-  ? `\n## 污染控制（防基准泄漏）\n以下文件是目标树内的非源码产物/基准文件, **不得读取、不得引用、不得作为审计依据**:\n${recon.exclude_files.map((f) => `- ${f}`).join("\n")}\n违反即审计无效。`
+  ? `\n## Pollution Control (prevent benchmark leakage)\nThe following files inside the target tree are non-source artifacts/benchmark files — DO NOT read them, DO NOT reference them, DO NOT use them as audit evidence:\n${recon.exclude_files.map((f) => `- ${f}`).join("\n")}\nViolating this invalidates the audit.`
   : "";
 
 // 经验前馈: RECON 提炼的 tricks 注入块 → 前置到每个 auditor 提示词（原框架硬规则）
 const tricksBlock = recon.tricks_injection
-  ? `\n## 经验前馈（历史复盘注入, 先读再干, 按此方向优先排查）\n${recon.tricks_injection}`
+  ? `\n## Experience Feed-Forward (injected from past post-mortems; read first, prioritize these directions)\n${recon.tricks_injection}`
   : "";
 
 // CPG 私有副本（fork, 必做）: scan_cpg 无锁且 --overwrite 原地重写共享 CPG,
 // 并行 HUNT 必须私有副本防损坏; 小 CPG(≤100MB) fork 毫秒级, 大 CPG 降级共享+flock
-const forkBlock = `\n## CPG 私有副本（fork, 必做, 防并发损坏）\n共享 CPG: ${recon.cpg_path}\n先查 CPG 大小（ls -l / stat）: 若 ≤100MB, 运行\n  audit-runner cpg fork --src ${recon.cpg_path} --n 1 --dir ${runDir}/cpg-forks/\n取回私有副本路径, 之后本 agent 所有 cpg query 与 scan_cpg **一律用私有副本**; 若 >100MB 直接用共享 CPG（flock 串行, 正确性优先）; fork 失败降级共享 CPG。`;
+const forkBlock = `\n## Private CPG copy (fork, mandatory, prevents concurrent corruption)\nShared CPG: ${recon.cpg_path}\nCheck its size first (ls -l / stat): if <=100MB, run\n  audit-runner cpg fork --src ${recon.cpg_path} --n 1 --dir ${runDir}/cpg-forks/\nand use the returned private copy for ALL of this agent's cpg queries and scan_cpg afterwards; if >100MB, use the shared CPG directly (flock-serialized, correctness first); if fork fails, fall back to the shared CPG.`;
 
 // ============================================================================
 // Phase 2: 候选池构建 → 文件聚合分组 → 排序 → 分批派发 HUNT（≤6/轮）
@@ -508,12 +518,12 @@ function exportBlockForHunt(g) {
   const hits = exportEntries.filter((e) => e.file === rel);
   const lines = [];
   if (hits.length) {
-    lines.push(`\n## 本组导出契约入口（RECON 产出, 导出即入口点）\n${hits.map((e) => `- ${e.symbol} @ ${e.file}:${e.line} (kind=${e.kind})`).join("\n")}\n这些符号无树内调用方, 属"设计承诺的外部调用面": **默认 REACHABLE**, reachability_basis=export-contract。`);
+    lines.push(`\n## Export-contract entries for this group (RECON output; export = entry point)\n${hits.map((e) => `- ${e.symbol} @ ${e.file}:${e.line} (kind=${e.kind})`).join("\n")}\nThese symbols have no in-tree callers and form a "designed external call surface": **default REACHABLE**, reachability_basis=export-contract.`);
   } else if (exportEntries.length) {
-    lines.push(`\n## 导出契约提示（RECON 产出）\n本组无导出契约入口; 若 sink 对应符号出现在全局导出面中, 按 export-contract 规则判定（默认存在消费者, 可能高权限中介）。`);
+    lines.push(`\n## Export-contract hint (RECON output)\nThis group has no export-contract entry; if a sink symbol appears in the global export surface, judge it under the export-contract rule (consumers default to existing, possibly privileged intermediaries).`);
   }
   if (exportEntries.length) {
-    lines.push(`**全通语义（2026-08-18）**: 导出契约入口默认存在消费者, 且消费者可能是高权限中介（root 守护进程转发非特权请求）。不得以"无消费者/非特权直连/文件权限门/no-gain"判不可达或降级 attacker_model。`);
+    lines.push(`**All-pass semantics**: export-contract entries are assumed to have consumers by default, and those consumers may be privileged intermediaries (e.g. a root daemon forwarding unprivileged requests). Do NOT mark a finding unreachable or downgrade its attacker_model on the grounds of "no consumer / unprivileged direct / file-mode gate / no-gain".`);
   }
   return lines.join("\n");
 }
@@ -635,59 +645,64 @@ for (let bi = 0; bi < dispatchGroups.length; bi += BATCH) {
   log(`HUNT 批次 ${bi / BATCH + 1}/${totalBatches}: ${batch.map((g) => g.file).join(", ")}${
     groups.length !== dispatchGroups.length ? `（${groups.length - dispatchGroups.length} 个内容重复副本组由脚本继承, 不派 agent）` : ""}`);
   const res = await parallel(batch.map((g) => () =>
-    agent(`你是 c-auditor（HUNT 阶段, 代码审计流水线段1, 文件聚合组）。
+    agent(`You are a c-auditor (HUNT stage, code audit pipeline, segment 1, file-aggregated group).
 
-先 read ${BRIEFS.auditor}; 组内每个类 read ${CODE_AUDIT} 对应章节:
+## Glossary
+- all-pass: exported API surfaces are assumed to have consumers by default (possibly privileged intermediaries).
+- export-contract reachability: the sink is an export symbol (intended/accidental, no in-tree callers) -> default REACHABLE.
+- reachability_basis: in-tree | export-contract | external-context.
+
+## Output contract (return this JSON; shown first on purpose)
+{cls: "<group id: ${g.file}>", findings: [{vuln_class, file, line(integer), sink, entry_point,
+  confidence: low|medium|high, evidence(entry->sink one line + code snippet), subsystem?, attacker_model,
+  trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
+  defenses_checked: [{defense, location, verdict: bypassed|blocked|not-present}],
+  reachability_basis: in-tree|export-contract|external-context,
+  impact_if_reachable?, unreachable_reason?}],
+ checked: string[], unchecked: string[], notes?: string}
+
+## Setup
+First read ${BRIEFS.auditor}; for each class in the group read the corresponding section of ${CODE_AUDIT}:
 ${g.cls_list.map((c) => `- ${c}: ${CLASS_SECTIONS[c] || c}`).join("\n")}
 ${tricksBlock}
 
-目标: ${target}
-审计文件(组): ${g.file}
-组内类清单: ${g.cls_list.join(", ")}
-组内候选点行号: ${g.points.length ? g.points.join(", ") : "(无 C sink 候选 → 整文件审计)"}
-权限类审计点入口行: ${g.entry_lines.length ? g.entry_lines.join(", ") : "(无)"}
-RECON 全局入口点: ${JSON.stringify(recon.entry_points)}
+Target: ${target}
+Audit file (group): ${g.file}
+Classes in group: ${g.cls_list.join(", ")}
+Candidate point lines in group: ${g.points.length ? g.points.join(", ") : "(no C-sink candidates -> whole-file audit)"}
+Authorization audit-point entry lines: ${g.entry_lines.length ? g.entry_lines.join(", ") : "(none)"}
+RECON global entry points: ${JSON.stringify(recon.entry_points)}
 CPG: ${recon.cpg_path}
-产物目录: ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/ （先 mkdir -p）
+Artifact directory: ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/  (mkdir -p first)
 
 ${discipline}
 ${forkBlock}
 ${exclusionBlock}
 ${exportBlockForHunt(g)}
 
-本任务:
-1. **引擎结果直接用 RECON 候选池, 不重跑资产**: RECON 已对每个类跑过预写资产
-   （${SKILL_ROOT}/skills/audit-runner/queries/classes/<class>.sc）并产出 candidate_hits
-   （上方"组内候选点行号"即引擎命中）。你**不需要再跑任何 classes/*.sc**——直接在候选点上做验证
-   （本组能派发即已有候选点; 零候选类已被脚本标记 SKIPPED, 不会到 HUNT）。
-2. 对组内候选点逐个 read/grep 逐跳验证（entry→sink 真实存在、无同名碰撞、类型匹配、防御绕过与否）;
-   **验证视角**: 不止看"内存是否有界"（无 OOB ≠ 无 bug）, 还要看**写出的值语义是否正确**
-   （字符串处理逻辑: 子串误匹配? 索引不同步导致截断/空洞? 边界输入是否破坏数据结构?）;
-   无候选点的类(权限类)按入口点审计"缺什么"(授权原语/身份校验/属主检查); 解释型文件(sh/py)整文件审计;
-3. **可达性判定是 HUNT 职责（2026-08-21 TRACE 并入 HUNT）**: 对每个 emitted finding,
-   必须产出结构化 trace 字段 —— 逐跳验证后判定 trace_result:
-   - sink 是导出契约入口（上方 exportBlock 命中, kind∈{intended,accidental} 且树内无调用方）→
-     **默认 REACHABLE**, reachability_basis="export-contract";
-   - 树内路径逐跳证实 → REACHABLE, reachability_basis="in-tree";
-   - 整条链被真实防御阻断（不可绕过）→ 不 emit 该 finding（记入 checked）, 或 emit
-     UNREACHABLE + unreachable_reason（审计留痕, 段2 不会验证）;
-   - REACHABLE 必填 impact_if_reachable; UNREACHABLE 必填 unreachable_reason。
-4. 只输出有证据链的 finding（vuln_class 必须填实际类, 不是组标识）; 每个候选点/入口点的检查结果记入 checked;
-   查不完的记入 unchecked 交回（自限: 单 agent 最多查 3 个入口点, 超出列入 unchecked）;
-5. 把 findings.json + 证据片段写到 ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/。
-6. **schema 门禁（恢复, 2026-08-21）**: 写完 findings.json 后跑权威校验:
+## Tasks
+1. **Use RECON's candidate pool directly — do not re-run assets**: RECON already ran the per-class assets
+   (${SKILL_ROOT}/skills/audit-runner/queries/classes/<class>.sc) and produced candidate_hits
+   (the "candidate point lines" above are engine hits). You do NOT need to run any classes/*.sc again —
+   verify directly on the candidate points (a group dispatches only if it has candidates; zero-candidate classes were marked SKIPPED by the script and never reach HUNT).
+2. Verify each candidate point hop-by-hop with read/grep (entry->sink really exists, no name collision, types match, defenses bypassable or not);
+   **verification lens**: don't stop at "is memory bounded" (no OOB != no bug) — also check **whether the value semantics written are correct**
+   (string handling: substring mis-match? index desync causing truncation/holes? do boundary inputs corrupt data structures?);
+   classes without candidate points (authorization classes) are audited by entry point for "what is missing" (authorization primitive/identity check/ownership check); interpreted files (sh/py) get whole-file audits.
+3. **Reachability verdict is HUNT's job**: for every emitted finding, produce the structured trace fields — after hop-by-hop verification decide trace_result:
+   - sink is an export-contract entry (the export block above matches; kind in {intended,accidental} and no in-tree callers) -> **default REACHABLE**, reachability_basis="export-contract";
+   - in-tree path verified hop-by-hop -> REACHABLE, reachability_basis="in-tree";
+   - the whole chain is blocked by a real, non-bypassable defense -> do NOT emit the finding (record it in checked), or emit UNREACHABLE + unreachable_reason (audit trail; segment 2 will not validate it);
+   - REACHABLE requires impact_if_reachable; UNREACHABLE requires unreachable_reason.
+4. Emit only findings with an evidence chain (vuln_class must be the actual class, not the group id); record the result of each candidate/entry point in checked;
+   anything not finished goes into unchecked (self-limit: at most 3 entry points per agent; beyond that -> unchecked).
+5. Write findings.json + evidence snippets to ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/.
+6. **Schema gate**: after writing findings.json, run the authoritative check:
    audit-runner gate --stage finding --run-dir ${runDir} --output ${runDir}/hunt/${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json
-   （使用合并后 schemas/stage-finding.json; 需 QUICK-PASS + AUTHORITATIVE PASS 才算合格;
-     失败按提示补字段后重写 findings.json 并重跑 gate; 若 audit-runner 不在 PATH 用绝对路径 ${AUDIT_RUNNER_FALLBACK}）。
+   (uses the merged schemas/stage-finding.json; needs QUICK-PASS + AUTHORITATIVE PASS; on failure fix the missing fields, rewrite findings.json, and re-run gate; if audit-runner is not on PATH use ${AUDIT_RUNNER_FALLBACK}).
 
-返回 JSON（严格按契约）:
-{cls: "<组标识: ${g.file}>", findings: [{vuln_class, file, line(整数), sink, entry_point,
-  confidence: low|medium|high, evidence(entry→sink 一句话+代码片段), subsystem?, attacker_model,
-  trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
-  defenses_checked: [{defense, location, verdict: bypassed|blocked|not-present}],
-  reachability_basis: in-tree|export-contract|external-context,
-  impact_if_reachable?, unreachable_reason?}],
- checked: string[], unchecked: string[], notes?: string}`,
+Return the JSON contract shown at the top.
+`,
       { label: `hunt:${g.file.replace(/[^A-Za-z0-9._-]/g, "_")}`, phase: "hunt", schema: HUNT_SCHEMA, ...(MODELS.hunt ? { model: MODELS.hunt } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) })
   ));
   res.forEach((rr, i) => { if (rr) rr._group = batch[i]; });
@@ -711,38 +726,46 @@ if (incompleteFirst.length > 0 && roundsDone < gapfillRounds) {
   log(`GAPFIL 第 1 轮: ${incompleteFirst.map((r) => r.cls).join(", ")} (${gapfillAgents} 个 agent)`);
   const gap = await parallel(incompleteFirst.map((r) => () => {
     const g = r._group || {};
-    return agent(`你是 c-auditor（GAPFIL 补查 ${r.cls}, 代码审计流水线段1）。
+    return agent(`You are a c-auditor (GAPFIL re-check of ${r.cls}, code audit pipeline, segment 1).
 
-先 read ${BRIEFS.auditor}; 组内类章节:
-${(g.cls_list || []).map((c) => `- ${c}: ${CLASS_SECTIONS[c] || c}`).join("\n") || "（沿用上一轮类清单）"}
+## Glossary
+- all-pass: exported API surfaces are assumed to have consumers by default (possibly privileged intermediaries).
+- export-contract reachability: the sink is an export symbol (intended/accidental, no in-tree callers) -> default REACHABLE.
+
+## Output contract (return this JSON; same contract as HUNT)
+{cls: string, findings: [{vuln_class, file, line, sink, entry_point, confidence, evidence,
+  attacker_model, trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
+  defenses_checked: [{defense, location, verdict}], reachability_basis, impact_if_reachable?,
+  unreachable_reason?}], checked: string[], unchecked: string[], notes?: string}
+
+## Setup
+First read ${BRIEFS.auditor}; group class sections:
+${(g.cls_list || []).map((c) => `- ${c}: ${CLASS_SECTIONS[c] || c}`).join("\n") || "(reuse the previous round's class list)"}
 ${tricksBlock}
 
-目标: ${target}
+Target: ${target}
 CPG: ${recon.cpg_path}
-产物目录: ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/ （追加写入）
+Artifact directory: ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/  (append)
 
 ${discipline}
 ${forkBlock}
 ${exclusionBlock}
 ${exportBlockForHunt(g)}
 
-上一轮覆盖情况（组 ${r.cls}）:
-- 已检查（勿重复）: ${JSON.stringify(r.checked || [])}
-- 未检查（逐一检查）: ${JSON.stringify(r.unchecked || [])}
+Previous coverage (group ${r.cls}):
+- Already checked (do NOT repeat): ${JSON.stringify(r.checked || [])}
+- Not checked (check each one): ${JSON.stringify(r.unchecked || [])}
 
-可达性判定同 HUNT（2026-08-21 TRACE 并入 HUNT）: 每个 emitted finding 必含
-trace_result/call_chain/data_flow/defenses_checked/reachability_basis; REACHABLE 必填
-impact_if_reachable, UNREACHABLE 必填 unreachable_reason; 导出契约入口默认 REACHABLE。
+Reachability verdict is the same as HUNT: every emitted finding must carry
+trace_result/call_chain/data_flow/defenses_checked/reachability_basis; REACHABLE requires
+impact_if_reachable, UNREACHABLE requires unreachable_reason; export-contract entries are default REACHABLE.
 
-**schema 门禁（恢复, 2026-08-21）**: 补查结果写 ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json 后,
-跑 audit-runner gate --stage finding --run-dir ${runDir} --output ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json
-（需 QUICK-PASS + AUTHORITATIVE PASS; 失败按提示补字段重写; audit-runner 不在 PATH 用 ${AUDIT_RUNNER_FALLBACK}）。
+**Schema gate**: after writing the re-check result to ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json, run
+audit-runner gate --stage finding --run-dir ${runDir} --output ${runDir}/hunt/${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}/findings.json
+(needs QUICK-PASS + AUTHORITATIVE PASS; on failure fix the missing fields and re-run; if audit-runner is not on PATH use ${AUDIT_RUNNER_FALLBACK}).
 
-返回 JSON（严格按契约, 同 HUNT）:
-{cls: string, findings: [{vuln_class, file, line, sink, entry_point, confidence, evidence,
-  attacker_model, trace_result: REACHABLE|UNREACHABLE, call_chain: string[], data_flow,
-  defenses_checked: [{defense, location, verdict}], reachability_basis, impact_if_reachable?,
-  unreachable_reason?}], checked: string[], unchecked: string[], notes?: string}`,
+Return the JSON contract shown at the top.
+`,
       { label: `gapfill:${String(r.cls).replace(/[^A-Za-z0-9._-]/g, "_")}`, phase: "gapfill", schema: HUNT_SCHEMA, ...(MODELS.gapfil ? { model: MODELS.gapfil } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) });
   }));
   results = results.map((old) => {

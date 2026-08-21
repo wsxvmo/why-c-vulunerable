@@ -54,9 +54,9 @@ const runDir = args.runDir || `${SKILL_ROOT}/workspace/runs/audit-seg3`;
 // 权限上下文（preflight pctx 确定性产出）— CVSS/severity 的确定性输入; external_context 为审计员显式生态知识
 const privilegeCtx = args.privilege_ctx || { privilege_context: "unknown", trigger_context: "unknown", signals: [], evidence_confidence: "low" };
 const externalContext = args.external_context || "";
-const pctxBlock = `## 权限上下文（preflight pctx 确定性产出, 单一事实源）\nprivilege_context=${privilegeCtx.privilege_context} (trigger=${privilegeCtx.trigger_context || "unknown"}, confidence=${privilegeCtx.evidence_confidence || "low"})\n## 全通语义（2026-08-18）\n导出契约入口（reachability_basis=export-contract）**默认存在消费者, 且消费者可能是高权限中介**（root 守护进程转发非特权请求）。pctx=unknown **不构成"无消费者"证据**——它只说明目标自身无固定运行权限; 对导出 API finding, 严重度不得因 pctx=unknown 保守降级（见 REPORT 规则）。`;
+const pctxBlock = `## Privilege context (deterministic preflight pctx output, single source of truth)\nprivilege_context=${privilegeCtx.privilege_context} (trigger=${privilegeCtx.trigger_context || "unknown"}, confidence=${privilegeCtx.evidence_confidence || "low"})\n## All-pass semantics\nExport-contract entries (reachability_basis=export-contract) **default to having consumers, possibly privileged intermediaries** (a root daemon forwarding unprivileged requests). pctx=unknown is NOT evidence of "no consumer" — it only means the target itself has no fixed runtime privilege; for exported-API findings, do NOT conservatively downgrade severity because of pctx=unknown (see REPORT rules).`;
 const externalBlock = externalContext
-  ? `\n## 外部生态知识（审计员显式提供, 非扫描结果）\n${externalContext}`
+  ? `\n## External ecosystem knowledge (explicitly provided by the auditor; NOT a scan result)\n${externalContext}`
   : "";
 
 // ---- 简化内联 schema ----
@@ -136,33 +136,36 @@ if (confirmed.length > 0) {
     status: c.status,
   }));
 
-  const chainRaw = await agent(`你是 c-chain（CHAIN 阶段, 代码审计流水线段3）。
+  const chainRaw = await agent(`You are a c-chain (CHAIN stage, code audit pipeline, segment 3).
 
-先 read ${BRIEFS.chain}, 再开始。
+## Output contract (return this JSON; shown first on purpose)
+{chains: [{title, severity: low|medium|high|critical, steps: string[](>=2), narrative,
+           cwe_id?, cvss_vector?, cvss_score?, blocked_by?}], summary: string}
 
-目标: ${target}
-已确认 finding 列表（来自 VALIDATE, 含 sanitizer 证据）:
+## Setup
+First read ${BRIEFS.chain}, then start.
+
+Target: ${target}
+Confirmed findings (from VALIDATE, with sanitizer evidence):
 ${JSON.stringify(brief, null, 2)}
 ${pctxBlock}
 ${externalBlock}
-产物目录: ${runDir}/chain/ （先 mkdir -p, 写 chains.json）
+Artifact directory: ${runDir}/chain/  (mkdir -p first, write chains.json)
 
-本任务:
-1. 分析所有 confirmed finding 间的组合攻击链（跨 finding, ≥2 步）;
-2. 偏好本地提权链（如 info-disclosure + buffer-overflow in setuid/root daemon）;
-   本地提权链的严重性升级判断以 pctx 的 privilege_context 为基准（root/setuid 高权限上下文 → 链价值更高）;
-3. **默认树内链 + 导出契约链（2026-08-18）**: 树内链按组件内 finding 组合; 对
-   reachability_basis=export-contract 的 confirmed finding, 其**外部消费路径作为假设链步纳入**
-   （标注 reachability_basis=export-contract / 具体消费者待 LIVE 确认）, **不因缺 external_context
-   整条丢弃**——"导出即承诺外部调用面", 消费者默认存在; 仅当 external_context 提供时才细化
-   具体跨包/跨组件消费者知识（不得自行扫描其他组件源码）;
-4. 每条链: title / severity(组合后升级) / steps(按利用顺序的 case id) / narrative /
-   cwe_id / cvss_vector / cvss_score / blocked_by(生产环境阻断项, 无则空数组);
-5. 链分析失败不阻塞 — 返回空 chains + 说明即可。
+## Tasks
+1. Analyze combined attack chains across ALL confirmed findings (>=2 steps);
+2. Prefer local privilege-escalation chains (e.g. info-disclosure + buffer-overflow in a setuid/root daemon);
+   severity escalation of an LPE chain is judged against pctx's privilege_context (root/setuid high-privilege context -> higher chain value);
+3. **Default in-tree chains + export-contract chains**: combine in-tree findings within the component; for confirmed findings with
+   reachability_basis=export-contract, include their **external consumption path as an assumed chain step**
+   (annotate reachability_basis=export-contract / specific consumer pending LIVE confirmation), do NOT drop the whole chain for lack of external_context —
+   "export = committed external call surface", consumers default to existing; only when external_context is provided, refine
+   concrete cross-package/cross-component consumer knowledge (never scan other components' source yourself);
+4. Each chain: title / severity (escalated after combination) / steps (case ids in exploit order) / narrative /
+   cwe_id / cvss_vector / cvss_score / blocked_by (production blockers; empty array if none);
+5. Chain-analysis failure must not block — return empty chains + explanation.
 
-返回 JSON（严格按契约）:
-{chains: [{title, severity: low|medium|high|critical, steps: string[](≥2), narrative,
-           cwe_id?, cvss_vector?, cvss_score?, blocked_by?}], summary: string}`,
+Return the JSON contract shown at the top.`,
     { label: "chain", phase: "chain", schema: CHAIN_SCHEMA, ...(MODELS.chain ? { model: MODELS.chain } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) });
   if (chainRaw && Array.isArray(chainRaw.chains)) {
     chainResult = chainRaw;
@@ -193,32 +196,34 @@ if (confirmed.length > 0) {
     poc_path: c.poc_path,
     technique: c.technique_used || (c.status === "confirmed" ? "asan" : "manual-review"),
   }));
-  const rep = await agent(`你是 REPORT 分析师（代码审计流水线段3）。
+  const rep = await agent(`You are a REPORT analyst (code audit pipeline, segment 3).
 
-对以下 sanitizer-confirmed finding 输出报告条目（补 cwe_id/cvss_vector/cvss_score/severity/summary）:
-${JSON.stringify(base, null, 2)}
-目标: ${target}
-${pctxBlock}
-链分析: ${JSON.stringify(chainResult.chains, null, 2)}
-产物目录: ${runDir}/report/ （先 mkdir -p, 写 report.json）
-
-规则:
-- cwe_id: 精确 CWE 标识（如 CWE-787, CWE-416）, 可多个
-- cvss_vector: CVSS 3.1 向量（按 attacker_model/entry_point/impact 推导）;
-  **AV/PR/UI 等维度以 pctx 的 privilege_context/trigger_context 为确定性输入**:
-  目标 high_privilege（root/setuid）→ PR 通常取 L 甚至无需先决权限; trigger=unprivileged_user → AV 偏 N/L, 反之收窄
-  **全通纪律（2026-08-18, 不可违反）**: 对 reachability_basis=export-contract 的 finding,
-  pctx=unknown 时 **不得保守取 PR:H**（导出契约默认存在消费者, 可能高权限中介; pctx=unknown 只是
-  目标自身无固定运行权限, 不是"无消费者"证据）。取 PR:L（导出面默认可由已存在消费者到达）或
-  PR:N/A（待外部消费者知识确认后定）; 仅 reachability_basis=in-tree / external-context 的 finding
-  才按实际树内/已知调用者定 PR。
-- severity: 按 cvss 与上下文定级 (info|low|medium|high|critical)
-- summary: 每 finding 一句话（漏洞本质 + 触发条件 + 影响）
-- findings 与 confirmed 一一对应, id 不变
-
-返回 JSON（严格按契约）:
+## Output contract (return this JSON; shown first on purpose)
 {findings: [{id, vuln_class, file, severity, language?, cwe_id?[], cvss_vector?, cvss_score?,
-             poc_path?, summary?}], summary: string(整体总结)}`,
+             poc_path?, summary?}], summary: string(overall)}
+
+## Input
+For the following sanitizer-confirmed findings, output report entries (fill in cwe_id/cvss_vector/cvss_score/severity/summary):
+${JSON.stringify(base, null, 2)}
+Target: ${target}
+${pctxBlock}
+Chain analysis: ${JSON.stringify(chainResult.chains, null, 2)}
+Artifact directory: ${runDir}/report/  (mkdir -p first, write report.json)
+
+## Rules
+- cwe_id: precise CWE ids (e.g. CWE-787, CWE-416), possibly multiple
+- cvss_vector: CVSS 3.1 vector (derived from attacker_model/entry_point/impact);
+  **AV/PR/UI etc. use pctx's privilege_context/trigger_context as the deterministic input**:
+  target high_privilege (root/setuid) -> PR usually L, even no prerequisite privilege; trigger=unprivileged_user -> AV leans N/L, else narrower.
+  **All-pass discipline (mandatory)**: for findings with reachability_basis=export-contract,
+  when pctx=unknown do NOT conservatively take PR:H (exported surfaces default to having consumers, possibly privileged intermediaries; pctx=unknown only
+  means the target itself has no fixed runtime privilege, not "no consumer"). Take PR:L (the exported surface is reachable by an assumed consumer by default) or
+  PR:N/A (pending external consumer knowledge); only findings with reachability_basis=in-tree / external-context use the actual in-tree/known caller for PR.
+- severity: rate from cvss + context (info|low|medium|high|critical)
+- summary: one sentence per finding (bug essence + trigger condition + impact)
+- findings must map 1:1 with confirmed, ids unchanged
+
+Return the JSON contract shown at the top.`,
     { label: "report", phase: "report", schema: REPORT_SCHEMA, ...(MODELS.report ? { model: MODELS.report } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) });
   if (rep && Array.isArray(rep.findings)) {
     reportFindings = rep.findings;
@@ -272,31 +277,34 @@ const ledgerEntries = reportFindings.map((f) => ({
   poc: f.poc_path || "",
 }));
 
-const ledger = await agent(`你是 ledger 收尾员（代码审计流水线段3, 一次性落账）。
+const ledger = await agent(`You are a ledger finisher (code audit pipeline, segment 3, one-shot bookkeeping).
 
-把最终审计结果写入 casefile 台账（${runDir}）。casefile.py 路径: ${CASEFILE_PY}
-（若不存在, 报告即可; 不阻塞流水线。）
+## Output contract (return this JSON; shown first on purpose)
+{casefile_initialized: bool, report_path: string("" if absent), case_ids: string[],
+ notes?: string}
 
-目标: ${target}
+## Setup
+Write the final audit results into the casefile ledger (${runDir}). casefile.py path: ${CASEFILE_PY}
+(if absent, just report; do not block the pipeline.)
+
+Target: ${target}
 confirmed findings: ${JSON.stringify(ledgerEntries, null, 2)}
 coverage: ${JSON.stringify(coverage, null, 2)}
-链: ${JSON.stringify(chainResult.chains, null, 2)}
+chains: ${JSON.stringify(chainResult.chains, null, 2)}
 
-步骤（全部用绝对路径 python3 调用, 失败就跳过继续, 不阻塞）:
-1. init（幂等, 已存在则跳过）: python3 ${CASEFILE_PY} init ${runDir} --title "Pipeline: ${target}" --target "${target}"
-2. 每个 confirmed finding add 一条案件:
-   python3 ${CASEFILE_PY} add ${runDir} --title "<title>" --status confirmed --bug-class "<vuln_class>" \\
-     --target "${target}" --evidence "<evidence 一行>" --field file=<file> --field line=<line> --field severity=<severity>
-   （推荐用包装器自动去重: audit-runner ledger --run-dir ${runDir} --op add --title ... --bug-class ... --dedup-key <file>:<line>:<vuln_class>, 它会打印 case id）;
-   记录每个 case id。
-3. 每 case 追加证据日志:
-   python3 ${CASEFILE_PY} log ${runDir} <case_id> --stage REPORT --verdict confirmed --evidence "<一句话证据>" [--artifact <poc 路径>]
-4. 0 confirmed 时: 也 init + log 一条 summary 记录（case_id 用 "RUN", --stage REPORT --verdict done --evidence "no confirmed findings; coverage: <各 cls=status>"）
-5. 生成可读报告: python3 ${CASEFILE_PY} report ${runDir} --out ${runDir}/report/casefile-report.md
+## Steps (all via absolute-path python3; skip on failure, never block)
+1. init (idempotent; skip if exists): python3 ${CASEFILE_PY} init ${runDir} --title "Pipeline: ${target}" --target "${target}"
+2. add one case per confirmed finding:
+   python3 ${CASEFILE_PY} add ${runDir} --title "<title>" --status confirmed --bug-class "<vuln_class>" \
+     --target "${target}" --evidence "<evidence one line>" --field file=<file> --field line=<line> --field severity=<severity>
+   (prefer the dedup wrapper: audit-runner ledger --run-dir ${runDir} --op add --title ... --bug-class ... --dedup-key <file>:<line>:<vuln_class>; it prints the case id);
+   record each case id.
+3. append an evidence log entry per case:
+   python3 ${CASEFILE_PY} log ${runDir} <case_id> --stage REPORT --verdict confirmed --evidence "<one-line evidence>" [--artifact <poc path>]
+4. at 0 confirmed: still init + log one summary entry (case_id "RUN", --stage REPORT --verdict done --evidence "no confirmed findings; coverage: <each cls=status>")
+5. generate a readable report: python3 ${CASEFILE_PY} report ${runDir} --out ${runDir}/report/casefile-report.md
 
-返回 JSON（严格按契约）:
-{casefile_initialized: bool, report_path: string(不存在则空串), case_ids: string[],
- notes?: string}`,
+Return the JSON contract shown at the top.`,
   { label: "ledger", phase: "ledger", schema: LEDGER_SCHEMA, ...(MODELS.report ? { model: MODELS.report } : {}), ...(MODELS.provider ? { provider: MODELS.provider } : {}) });
 
 log(`段3完成: chains=${chainResult.chains.length}, report findings=${reportFindings.length}, ledger=${ledger ? "ok" : "skipped"}`);
